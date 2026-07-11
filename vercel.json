@@ -1,9 +1,9 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/index.js" },
-    { "source": "/(.*\\.(css|js|png|jpg|jpeg|svg|ico|woff2|map))", "destination": "/public/$1" },
-    { "source": "/(.*)", "destination": "/public/index.html" }
+    { "source": "/api/:path*", "destination": "/index.js" },
+    { "source": "/:path*\\.(css|js|png|jpg|jpeg|svg|ico|woff2|map)", "destination": "/public/:path*.$1" },
+    { "source": "/:path*", "destination": "/public/index.html" }
   ],
   "functions": {
     "index.js": {
