@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Orby</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='white' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='14' fill='white'/%3E%3C/svg%3E" />
+<style>
+  :root{
+    --bg:#0a0a0a;
+    --bg-2:#111;
+    --bg-3:#161616;
+    --line:rgba(255,255,255,.08);
+    --line-2:rgba(255,255,255,.14);
+    --text:#f5f5f5;
+    --text-2:#a1a1a1;
+    --text-3:#6b6b6b;
+    --accent:#ffffff;
+    --accent-dim:rgba(255,255,255,.06);
+    --danger:#ff5c5c;
+    --ok:#7ee787;
+    --warn:#e3b341;
+    --radius:12px;
+    --radius-sm:8px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "JetBrains Mono", monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:var(--font);
+    background:var(--bg);
+    color:var(--text);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow:hidden;
+    letter-spacing:-.005em;
+  }
+
+  /* ===== Layout ===== */
+  .app{
+    display:grid;
+    grid-template-columns:260px 1fr;
+    height:100vh;
+  }
+  @media (max-width: 820px){
+    .app{grid-template-columns:1fr}
+    .sidebar{display:none}
+  }
+
+  /* ===== Sidebar ===== */
+  .sidebar{
+    background:var(--bg-2);
+    border-right:1px solid var(--line);
+    display:flex;flex-direction:column;
+    padding:18px 14px;
+    gap:14px;
+  }
+  .brand{
+    display:flex;align-items:center;gap:10px;
+    padding:6px 8px;
+    font-weight:600;letter-spacing:-.02em;font-size:17px;
+  }
+  .brand-mark{
+    width:26px;height:26px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #fff 0%, #999 55%, #222 100%);
+    box-shadow:0 0 0 1px rgba(255,255,255,.2), inset 0 0 12px rgba(0,0,0,.4);
+  }
+  .new-chat{
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    padding:10px 12px;border-radius:var(--radius-sm);
+    background:var(--accent);color:#000;font-weight:600;font-size:13.5px;
+    border:none;cursor:pointer;
+    transition:transform .15s ease, opacity .15s ease;
+  }
+  .new-chat:hover{opacity:.9}
+  .new-chat:active{transform:scale(.98)}
+  .side-title{
+    font-size:11px;letter-spacing:.12em;color:var(--text-3);
+    text-transform:uppercase;padding:0 8px;margin-top:6px;
+  }
+  .history{
+    flex:1;overflow-y:auto;
+    display:flex;flex-direction:column;gap:2px;
+    padding:0 2px;
+  }
+  .history-item{
+    padding:8px 10px;border-radius:8px;
+    color:var(--text-2);font-size:13px;
+    cursor:pointer;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;
+  }
+  .history-item:hover{background:var(--accent-dim);color:var(--text)}
+  .history-item.active{background:rgba(255,255,255,.09);color:var(--text)}
+  .side-foot{
+    padding:8px;font-size:11px;color:var(--text-3);
+    border-top:1px solid var(--line);
+  }
+
+  /* ===== Main ===== */
+  .main{
+    display:flex;flex-direction:column;
+    height:100vh;min-width:0;
+  }
+  .topbar{
+    height:52px;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 20px;border-bottom:1px solid var(--line);
+    background:rgba(10,10,10,.7);
+    backdrop-filter:blur(10px);
+  }
+  .topbar-left{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--text-2)}
+  .model-select{
+    background:var(--bg-3);color:var(--text);
+    border:1px solid var(--line-2);border-radius:8px;
+    padding:6px 10px;font-size:12.5px;font-family:var(--font);
+    cursor:pointer;outline:none;
+  }
+  .model-select:hover{border-color:rgba(255,255,255,.25)}
+  .top-actions{display:flex;gap:8px;align-items:center}
+  .icon-btn{
+    background:transparent;color:var(--text-2);
+    border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;font-size:12px;cursor:pointer;
+    font-family:var(--font);
+  }
+  .icon-btn:hover{color:var(--text);border-color:var(--line-2)}
+
+  /* ===== Chat area ===== */
+  .chat{
+    flex:1;overflow-y:auto;
+    padding:26px 0 140px;
+    scroll-behavior:smooth;
+  }
+  .chat-inner{
+    max-width:760px;margin:0 auto;padding:0 22px;
+    display:flex;flex-direction:column;gap:22px;
+  }
+  .empty{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:60vh;text-align:center;gap:14px;
+  }
+  .empty h1{
+    font-size:34px;font-weight:600;letter-spacing:-.02em;margin:0;
+    background:linear-gradient(180deg,#fff 0%, #888 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .empty p{color:var(--text-3);font-size:13.5px;margin:0}
+  .suggestions{
+    display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    margin-top:20px;max-width:560px;width:100%;
+  }
+  .suggest{
+    text-align:left;padding:12px 14px;border-radius:10px;
+    background:var(--bg-2);border:1px solid var(--line);
+    color:var(--text-2);cursor:pointer;font-size:13px;line-height:1.5;
+    transition:all .15s ease;font-family:var(--font);
+  }
+  .suggest:hover{background:var(--bg-3);border-color:var(--line-2);color:var(--text)}
+  @media (max-width: 620px){.suggestions{grid-template-columns:1fr}}
+
+  /* ===== Messages ===== */
+  .msg{display:flex;flex-direction:column;gap:6px;animation:fadeIn .25s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .msg .role{
+    font-size:11px;letter-spacing:.08em;color:var(--text-3);
+    text-transform:uppercase;font-weight:600;
+  }
+  .msg.user .bubble{
+    background:var(--bg-3);border:1px solid var(--line);
+    padding:12px 14px;border-radius:var(--radius);
+    align-self:flex-end;max-width:80%;
+  }
+  .msg.user{align-items:flex-end}
+  .msg.assistant .bubble{
+    line-height:1.7;font-size:14.5px;color:var(--text);
+  }
+  .bubble p{margin:.5em 0}
+  .bubble pre{
+    background:#000;border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px;overflow:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.55;
+    margin:.6em 0;
+  }
+  .bubble code{
+    font-family:var(--mono);font-size:.9em;
+    background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px;
+  }
+  .bubble pre code{background:none;padding:0}
+  .bubble a{color:#fff;text-decoration:underline;text-decoration-color:rgba(255,255,255,.3)}
+  .bubble img{max-width:100%;border-radius:10px;border:1px solid var(--line);margin:.4em 0}
+  .bubble ul,.bubble ol{padding-left:1.4em}
+
+  /* ===== Tool blocks ===== */
+  .tool-run{
+    border:1px solid var(--line);border-radius:var(--radius);
+    background:var(--bg-2);overflow:hidden;
+    font-size:12.5px;
+  }
+  .tool-head{
+    display:flex;align-items:center;gap:8px;
+    padding:9px 12px;cursor:pointer;
+    border-bottom:1px solid transparent;
+    transition:background .15s ease;
+  }
+  .tool-head:hover{background:var(--bg-3)}
+  .tool-run.open .tool-head{border-bottom-color:var(--line)}
+  .tool-dot{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--warn);
+    box-shadow:0 0 0 3px rgba(227,179,65,.15);
+  }
+  .tool-run.done .tool-dot{background:var(--ok);box-shadow:0 0 0 3px rgba(126,231,135,.15)}
+  .tool-run.error .tool-dot{background:var(--danger);box-shadow:0 0 0 3px rgba(255,92,92,.15)}
+  .tool-run.running .tool-dot{
+    animation:pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:1;transform:scale(1)}
+    50%{opacity:.4;transform:scale(.85)}
+  }
+  .tool-name{font-weight:600;letter-spacing:-.005em;color:var(--text)}
+  .tool-meta{color:var(--text-3);margin-left:auto;font-size:11.5px;font-family:var(--mono)}
+  .tool-body{padding:10px 12px 12px;display:none}
+  .tool-run.open .tool-body{display:block}
+  .tool-section{margin:6px 0}
+  .tool-section-label{
+    color:var(--text-3);font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;margin-bottom:4px;
+  }
+  .tool-section pre{
+    background:#000;border:1px solid var(--line);border-radius:8px;
+    padding:9px 11px;margin:0;max-height:280px;overflow:auto;
+    font-family:var(--mono);font-size:11.5px;line-height:1.55;
+    white-space:pre-wrap;word-break:break-word;
+  }
+  .caret{
+    width:10px;height:10px;border-right:1.5px solid var(--text-3);
+    border-bottom:1.5px solid var(--text-3);
+    transform:rotate(-45deg);margin-right:2px;transition:transform .15s ease;
+  }
+  .tool-run.open .caret{transform:rotate(45deg)}
+
+  /* ===== Status pill ===== */
+  .status-pill{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:4px 10px;border-radius:999px;
+    background:var(--bg-2);border:1px solid var(--line);
+    font-size:11.5px;color:var(--text-2);align-self:flex-start;
+    font-family:var(--mono);
+  }
+
+  /* ===== Composer ===== */
+  .composer-wrap{
+    position:absolute;left:260px;right:0;bottom:0;
+    padding:16px 22px 22px;
+    background:linear-gradient(180deg, rgba(10,10,10,0) 0%, rgba(10,10,10,.9) 40%, var(--bg) 80%);
+    pointer-events:none;
+  }
+  @media (max-width: 820px){.composer-wrap{left:0}}
+  .composer{
+    max-width:760px;margin:0 auto;
+    background:var(--bg-3);border:1px solid var(--line-2);
+    border-radius:18px;padding:10px 12px;
+    display:flex;flex-direction:column;gap:6px;
+    pointer-events:auto;
+    box-shadow:0 10px 40px rgba(0,0,0,.4), 0 1px 0 rgba(255,255,255,.04) inset;
+    transition:border-color .2s ease;
+  }
+  .composer:focus-within{border-color:rgba(255,255,255,.3)}
+  .composer textarea{
+    background:transparent;border:none;outline:none;color:var(--text);
+    font-family:var(--font);font-size:14.5px;line-height:1.55;
+    resize:none;padding:8px 6px;max-height:220px;
+    width:100%;
+  }
+  .composer textarea::placeholder{color:var(--text-3)}
+  .composer-actions{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:2px 4px;
+  }
+  .composer-left{display:flex;gap:6px;align-items:center}
+  .chip{
+    background:transparent;border:1px solid var(--line);
+    color:var(--text-2);font-size:11.5px;
+    padding:4px 9px;border-radius:999px;cursor:pointer;
+    font-family:var(--font);
+  }
+  .chip:hover{color:var(--text);border-color:var(--line-2)}
+  .send{
+    width:32px;height:32px;border-radius:50%;
+    background:var(--accent);color:#000;border:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform .15s ease, opacity .15s ease;
+  }
+  .send:disabled{opacity:.4;cursor:not-allowed}
+  .send:hover:not(:disabled){transform:scale(1.06)}
+  .send svg{width:16px;height:16px}
+
+  /* ===== Streaming cursor ===== */
+  .cursor{display:inline-block;width:7px;height:14px;background:var(--text);
+    margin-left:2px;vertical-align:-2px;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ===== Scrollbars ===== */
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:8px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.18)}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============== SIDEBAR ============== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>Orby</div>
+    </div>
+    <button class="new-chat" id="newChat">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      New chat
+    </button>
+    <div class="side-title">History</div>
+    <div class="history" id="history"></div>
+    <div class="side-foot">
+      Orby v1.0 · autonomous agent
+    </div>
+  </aside>
+
+  <!-- ============== MAIN ============== -->
+  <main class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <span style="color:var(--text-3)">Model</span>
+        <select class="model-select" id="modelSelect">
+          <option value="felo-chat">felo-chat (default)</option>
+          <option value="scira-default">scira-default</option>
+          <option value="scira-gemini-3.1-flash-lite">Gemini 3.1 mini</option>
+          <option value="scira-qwen-32b">qwen32b (casual)</option>
+        </select>
+      </div>
+      <div class="top-actions">
+        <button class="icon-btn" id="clearBtn">Clear</button>
+      </div>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="chat-inner" id="chatInner">
+        <div class="empty" id="empty">
+          <h1>What shall we build?</h1>
+          <p>Orby は自律的にツールを呼び出し、うまくいくまで再思考します。</p>
+          <div class="suggestions">
+            <button class="suggest" data-p="Reactで無限スクロール可能なTwitter風タイムラインを1ファイルHTMLで作って">Reactで無限スクロール可能な Twitter 風タイムラインを 1 ファイル HTML で作って</button>
+            <button class="suggest" data-p="今週のAI最新ニュースをWeb検索で3件調べて要約して">今週の AI 最新ニュースを Web 検索で 3 件調べて要約して</button>
+            <button class="suggest" data-p="フィボナッチ数列のn=40を計算するJSコードを書いて、実際に実行して結果を教えて">フィボナッチ数列 n=40 を計算する JS を書いて実行して結果を教えて</button>
+            <button class="suggest" data-p="幻想的な夜の東京タワーの画像を生成して">幻想的な夜の東京タワーの画像を生成して</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Orby にメッセージを送る..." autofocus></textarea>
+        <div class="composer-actions">
+          <div class="composer-left">
+            <button class="chip" id="stopBtn" style="display:none">■ Stop</button>
+          </div>
+          <button class="send" id="sendBtn" title="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // =========================================================================
+  // Simple markdown renderer (safe-ish)
+  // =========================================================================
+  function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c])}
+  function renderMarkdown(md){
+    if(!md) return "";
+    let s = md;
+    // Code fences
+    const codeBlocks=[];
+    s = s.replace(/```(\w+)?\n([\s\S]*?)```/g,(_,lang,code)=>{
+      codeBlocks.push({lang:lang||"",code});
+      return `\u0000CB${codeBlocks.length-1}\u0000`;
+    });
+    s = escapeHtml(s);
+    // Inline code
+    s = s.replace(/`([^`\n]+)`/g,(_,c)=>`<code>${c}</code>`);
+    // Links
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Images
+    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'<img src="$2" alt="$1"/>');
+    // Bold/italic
+    s = s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    s = s.replace(/(^|\W)\*([^*]+)\*/g,'$1<em>$2</em>');
+    // Headings
+    s = s.replace(/^### (.+)$/gm,'<h3>$1</h3>');
+    s = s.replace(/^## (.+)$/gm,'<h2>$1</h2>');
+    s = s.replace(/^# (.+)$/gm,'<h1>$1</h1>');
+    // Lists
+    s = s.replace(/(?:^|\n)((?:- .+\n?)+)/g,(m,list)=>{
+      const items=list.trim().split(/\n/).map(l=>`<li>${l.replace(/^- /,'')}</li>`).join("");
+      return `\n<ul>${items}</ul>`;
+    });
+    // Paragraphs
+    s = s.split(/\n{2,}/).map(p=>{
+      if(/^<(h\d|ul|ol|pre|img)/.test(p.trim())) return p;
+      if(!p.trim()) return "";
+      return `<p>${p.replace(/\n/g,"<br/>")}</p>`;
+    }).join("\n");
+    // Restore code blocks
+    s = s.replace(/\u0000CB(\d+)\u0000/g,(_,i)=>{
+      const {lang,code}=codeBlocks[+i];
+      return `<pre><code class="lang-${lang}">${escapeHtml(code)}</code></pre>`;
+    });
+    return s;
+  }
+  function stripToolBlocks(s){
+    return s.replace(/```tool\s*[\s\S]*?```/g,"").trim();
+  }
+
+  // =========================================================================
+  // State
+  // =========================================================================
+  const state = {
+    messages: [],        // conversation history sent to API
+    currentModel: "felo-chat",
+    running: false,
+    abortCtl: null,
+    history: JSON.parse(localStorage.getItem("orby.history")||"[]"),
+    activeId: null,
+  };
+
+  const $chat = document.getElementById("chat");
+  const $chatInner = document.getElementById("chatInner");
+  const $empty = document.getElementById("empty");
+  const $input = document.getElementById("input");
+  const $sendBtn = document.getElementById("sendBtn");
+  const $stopBtn = document.getElementById("stopBtn");
+  const $modelSel = document.getElementById("modelSelect");
+  const $newChat = document.getElementById("newChat");
+  const $clearBtn = document.getElementById("clearBtn");
+  const $historyEl = document.getElementById("history");
+
+  $modelSel.addEventListener("change", ()=> state.currentModel = $modelSel.value);
+
+  // Auto-grow textarea
+  $input.addEventListener("input", ()=>{
+    $input.style.height="auto";
+    $input.style.height = Math.min($input.scrollHeight, 220)+"px";
+  });
+  $input.addEventListener("keydown",(e)=>{
+    if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+  });
+  $sendBtn.addEventListener("click", send);
+  $stopBtn.addEventListener("click", ()=>{
+    if(state.abortCtl) state.abortCtl.abort();
+  });
+  document.querySelectorAll(".suggest").forEach(b=>{
+    b.addEventListener("click", ()=>{ $input.value = b.dataset.p; send(); });
+  });
+  $newChat.addEventListener("click", ()=> resetConversation());
+  $clearBtn.addEventListener("click", ()=> resetConversation());
+
+  function resetConversation(){
+    state.messages = [];
+    state.activeId = null;
+    $chatInner.innerHTML="";
+    $chatInner.appendChild($empty);
+    $empty.style.display="";
+    $input.focus();
+  }
+
+  function renderHistory(){
+    $historyEl.innerHTML="";
+    state.history.slice().reverse().forEach(h=>{
+      const el=document.createElement("div");
+      el.className="history-item" + (h.id===state.activeId?" active":"");
+      el.textContent = h.title;
+      el.addEventListener("click", ()=> loadHistory(h.id));
+      $historyEl.appendChild(el);
+    });
+  }
+  function persistHistory(){
+    localStorage.setItem("orby.history", JSON.stringify(state.history));
+  }
+  function loadHistory(id){
+    const item = state.history.find(x=>x.id===id);
+    if(!item) return;
+    state.activeId = id;
+    state.messages = item.messages.slice();
+    $chatInner.innerHTML="";
+    $empty.style.display="none";
+    item.messages.forEach(m=>{
+      if(m.role==="user") addUserBubble(m.content);
+      else if(m.role==="assistant") {
+        const {bubble} = addAssistantBubble();
+        bubble.innerHTML = renderMarkdown(stripToolBlocks(m.content));
+      }
+    });
+    renderHistory();
+  }
+  function saveActiveToHistory(){
+    if(state.messages.length===0) return;
+    const firstUser = state.messages.find(m=>m.role==="user");
+    const title = (firstUser?.content||"Untitled").slice(0,40);
+    if(!state.activeId){
+      state.activeId = "c_"+Date.now();
+      state.history.push({id:state.activeId, title, messages:state.messages.slice()});
+    } else {
+      const h = state.history.find(x=>x.id===state.activeId);
+      if(h){ h.messages = state.messages.slice(); h.title = title; }
+    }
+    persistHistory(); renderHistory();
+  }
+  renderHistory();
+
+  // =========================================================================
+  // UI builders
+  // =========================================================================
+  function addUserBubble(text){
+    $empty.style.display="none";
+    const msg = document.createElement("div");
+    msg.className="msg user";
+    msg.innerHTML = `<div class="role">You</div><div class="bubble"></div>`;
+    msg.querySelector(".bubble").textContent = text;
+    $chatInner.appendChild(msg);
+    scrollBottom();
+    return msg;
+  }
+  function addAssistantBubble(){
+    $empty.style.display="none";
+    const msg = document.createElement("div");
+    msg.className="msg assistant";
+    msg.innerHTML = `<div class="role">Orby</div><div class="bubble"></div>`;
+    const bubble = msg.querySelector(".bubble");
+    $chatInner.appendChild(msg);
+    scrollBottom();
+    return { msg, bubble };
+  }
+  function addStatus(text){
+    const pill = document.createElement("div");
+    pill.className="status-pill";
+    pill.innerHTML = `<div style="width:6px;height:6px;border-radius:50%;background:var(--text-2);animation:pulse 1.2s ease-in-out infinite"></div>${text}`;
+    $chatInner.appendChild(pill);
+    scrollBottom();
+    return pill;
+  }
+  function addToolRun(tool, args){
+    const el = document.createElement("div");
+    el.className="tool-run running open";
+    el.innerHTML = `
+      <div class="tool-head">
+        <div class="tool-dot"></div>
+        <div class="tool-name">${escapeHtml(tool)}</div>
+        <div class="tool-meta">running…</div>
+        <div class="caret"></div>
+      </div>
+      <div class="tool-body">
+        <div class="tool-section">
+          <div class="tool-section-label">args</div>
+          <pre>${escapeHtml(JSON.stringify(args,null,2))}</pre>
+        </div>
+      </div>
+    `;
+    el.querySelector(".tool-head").addEventListener("click",()=>{
+      el.classList.toggle("open");
+    });
+    $chatInner.appendChild(el);
+    scrollBottom();
+    return el;
+  }
+  function completeToolRun(el, result, ms){
+    el.classList.remove("running");
+    if(result && result.error) el.classList.add("error");
+    else el.classList.add("done");
+    el.querySelector(".tool-meta").textContent = (ms!=null?`${ms}ms`:"") + (result&&result.error?" · error":" · ok");
+    const body = el.querySelector(".tool-body");
+    const sec = document.createElement("div");
+    sec.className="tool-section";
+    let preview = result;
+    // Special preview for images
+    if(result && result.url && /^https?:\/\/image\.pollinations/.test(result.url)){
+      sec.innerHTML = `<div class="tool-section-label">image</div>
+        <img src="${result.url}" alt="" style="max-width:100%;border-radius:8px;border:1px solid var(--line)"/>
+        <pre>${escapeHtml(JSON.stringify(result,null,2))}</pre>`;
+    } else if(result && result.download_url){
+      sec.innerHTML = `<div class="tool-section-label">result</div>
+        <div style="margin-bottom:8px"><a href="${result.download_url}" target="_blank" style="color:#fff">↓ ${escapeHtml(result.filename||"download")}</a></div>
+        <pre>${escapeHtml(JSON.stringify(result,null,2))}</pre>`;
+    } else {
+      const j = JSON.stringify(preview,null,2);
+      sec.innerHTML = `<div class="tool-section-label">result</div><pre>${escapeHtml(j.length>4000?j.slice(0,4000)+"\n... (truncated)":j)}</pre>`;
+    }
+    body.appendChild(sec);
+  }
+
+  function scrollBottom(){
+    requestAnimationFrame(()=>{ $chat.scrollTop = $chat.scrollHeight; });
+  }
+
+  // =========================================================================
+  // Send / stream (SSE)
+  // =========================================================================
+  async function send(){
+    if(state.running) return;
+    const text = $input.value.trim();
+    if(!text) return;
+    $input.value=""; $input.style.height="auto";
+
+    addUserBubble(text);
+    state.messages.push({role:"user", content:text});
+
+    state.running = true;
+    $sendBtn.disabled = true;
+    $stopBtn.style.display="inline-block";
+
+    let currentBubble = null;
+    let currentBubbleText = "";
+    let assistantRawBuffer = "";  // includes tool blocks
+
+    const statusPill = addStatus("thinking…");
+    const toolElsByCallKey = new Map();
+
+    try {
+      state.abortCtl = new AbortController();
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          messages: state.messages,
+          model: state.currentModel,
+        }),
+        signal: state.abortCtl.signal,
+      });
+      if(!res.ok || !res.body) throw new Error("HTTP "+res.status);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      function handleEvent(event, data){
+        try { data = JSON.parse(data); } catch(_){ return; }
+
+        if(event==="round"){
+          statusPill.querySelector("div").style.background = "var(--warn)";
+          statusPill.lastChild.textContent = `round ${data.round} · reasoning…`;
+        }
+        else if(event==="assistant_start"){
+          currentBubble = addAssistantBubble().bubble;
+          currentBubbleText = "";
+          assistantRawBuffer = "";
+        }
+        else if(event==="assistant_delta"){
+          assistantRawBuffer += data.text;
+          // Render text as it streams, stripping tool blocks visually
+          const display = stripToolBlocks(assistantRawBuffer);
+          currentBubbleText = display;
+          if(currentBubble){
+            currentBubble.innerHTML = renderMarkdown(display) + `<span class="cursor"></span>`;
+            scrollBottom();
+          }
+        }
+        else if(event==="assistant_end"){
+          if(currentBubble){
+            const clean = stripToolBlocks(assistantRawBuffer);
+            currentBubble.innerHTML = renderMarkdown(clean);
+            if(!clean.trim()){
+              // Assistant only emitted tool calls — hide the empty bubble
+              currentBubble.parentElement.style.display="none";
+            }
+          }
+        }
+        else if(event==="tools_start"){
+          statusPill.lastChild.textContent = `${data.count} tool${data.count>1?"s":""} running…`;
+        }
+        else if(event==="tool_call"){
+          const key = data.tool + JSON.stringify(data.args);
+          const el = addToolRun(data.tool, data.args||{});
+          toolElsByCallKey.set(key, el);
+        }
+        else if(event==="tool_result"){
+          const key = data.tool + JSON.stringify(data.args);
+          const el = toolElsByCallKey.get(key);
+          if(el) completeToolRun(el, data.result, data.elapsed_ms);
+        }
+        else if(event==="final"){
+          // Persist assistant content for context
+          if(assistantRawBuffer) state.messages.push({role:"assistant", content: assistantRawBuffer});
+        }
+        else if(event==="error"){
+          const p = addStatus("⚠ " + data.message);
+          p.style.borderColor = "rgba(255,92,92,.3)";
+        }
+        else if(event==="done"){
+          statusPill.remove();
+        }
+      }
+
+      while(true){
+        const {value, done} = await reader.read();
+        if(done) break;
+        buf += decoder.decode(value, {stream:true});
+        let sep;
+        while((sep = buf.indexOf("\n\n")) >= 0){
+          const raw = buf.slice(0, sep);
+          buf = buf.slice(sep+2);
+          const lines = raw.split("\n");
+          let event="message", data="";
+          for(const ln of lines){
+            if(ln.startsWith("event:")) event = ln.slice(6).trim();
+            else if(ln.startsWith("data:")) data += ln.slice(5).trim();
+          }
+          if(data) handleEvent(event, data);
+        }
+      }
+    } catch(e) {
+      if(e.name!=="AbortError"){
+        const p = addStatus("⚠ " + (e.message||e));
+        p.style.borderColor = "rgba(255,92,92,.3)";
+      }
+    } finally {
+      state.running = false;
+      state.abortCtl = null;
+      $sendBtn.disabled = false;
+      $stopBtn.style.display="none";
+      try{ statusPill.remove(); }catch(_){}
+      saveActiveToHistory();
+      $input.focus();
+    }
+  }
+</script>
+</body>
+</html>
