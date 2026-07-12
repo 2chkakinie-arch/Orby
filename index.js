@@ -1,11 +1,13 @@
 // ============================================================================
-// Orby v5 — Autonomous Coding Agent Backend (Production-grade)
-// - Default model: scira-gemini-3.1-flash-lite
-// - Forgiving tool-call parser (recovers from malformed JSON, wrong keys, aliases)
-// - 13 world-class skills with deep implementation knowledge
-// - 13 tools: web_search, html_fetch, js_exec, load_skill, parallel_think,
-//             image_generate, file_upload, read_file, edit_file, extract_data,
-//             summarize, memory_store, memory_recall
+// Orby v6 — Universal Autonomous Agent (Genspark-class)
+// ============================================================================
+// Design principles:
+// - Universal: works excellently for ANY task, not specialized to games/code
+// - Intelligent routing: picks the right model for each subtask based on
+//   measured performance characteristics (speed / output size / reasoning depth)
+// - Autonomous reasoning: parallel_think as first step for complex tasks,
+//   proper tool chaining, self-verification
+// - Robust: forgiving tool parser, hallucination detection, error recovery
 // ============================================================================
 
 const express = require("express");
@@ -26,419 +28,344 @@ const DEFAULT_MODEL = "scira-gemini-3.1-flash-lite";
 const SHORTCUTS = new Map();
 const UPLOADED_FILES = new Map();
 const ATTACHMENTS = new Map();
-const MEMORY = new Map(); // simple key→value long-term memory
+const MEMORY = new Map();
 
 // ============================================================================
-// SKILLS — 13 world-class skills with deep implementation knowledge
+// Model routing table (measured performance)
+// ============================================================================
+const MODEL_PROFILE = {
+  "scira-gemini-3.1-flash-lite": { speed: "fast",   size: "medium", depth: "shallow", strength: "多言語・ツール従順・軽量タスク" },
+  "gpt-4o-mini":                  { speed: "fast",   size: "medium", depth: "shallow", strength: "簡潔な要約・短い返答" },
+  "gpt-4o":                       { speed: "medium", size: "medium", depth: "medium",  strength: "バランス型・一般タスク" },
+  "deepseek-r1":                  { speed: "medium", size: "medium", depth: "deep",    strength: "論理推論・数学・アルゴリズム" },
+  "gpt-4":                        { speed: "slow",   size: "large",  depth: "deep",    strength: "深い分析・長文生成・多面的検討" },
+  "felo-chat":                    { speed: "medium", size: "xlarge", depth: "medium",  strength: "超長文出力 (最大21KB) ・大規模コード" },
+  "scira-nemotron-3-super":       { speed: "slow",   size: "large",  depth: "deep",    strength: "技術判断・アーキテクチャ選定" },
+  "scira-default":                { speed: "medium", size: "medium", depth: "medium",  strength: "汎用フォールバック" },
+};
+
+// Routing rules by task category
+function pickModelFor(category) {
+  const table = {
+    "chat":             "scira-gemini-3.1-flash-lite",
+    "quick":            "scira-gemini-3.1-flash-lite",
+    "research":         "scira-gemini-3.1-flash-lite",
+    "summary":          "gpt-4o-mini",
+    "general":          "gpt-4o",
+    "reasoning":        "deepseek-r1",
+    "analysis":         "gpt-4",
+    "code_large":       "felo-chat",
+    "architecture":     "scira-nemotron-3-super",
+    "creative_writing": "gpt-4",
+  };
+  return table[category] || DEFAULT_MODEL;
+}
+
+// ============================================================================
+// SKILLS — 13 universal skills (no task-specific hardcoded examples)
 // ============================================================================
 const SKILLS = {
-  "UI-SKILL": `# UI/UX 設計スキル（世界水準）
+  "UI-SKILL": `# UI/UX デザインの原則
 
-## 基本原則
-- 常にダークテーマを基本とし、単色（黒/白/グレー）+ 1色のシグネチャーアクセント
-- 8pxグリッド、150ms cubic-bezier(.4,0,.2,1) トランジション
-- ボーダー: 1px rgba(255,255,255,.08) / rgba(255,255,255,.14) / rgba(255,255,255,.22)
-- 角丸: カード14px、ボタン10px、チップ8px
-- タイポグラフィ: system-ui スタック、タイトルはtracking-tight（-.02em）
+## 基本
+- 一貫した視覚言語 (色・フォント・余白のシステム化)
+- ヒエラルキーを持たせる (サイズ・色・配置で重要度を表現)
+- 認知負荷の最小化 (1画面1メインアクション)
+- フィードバック即座に (hover/click/load状態)
 
-## カラーパレット（洗練された配色）
-- 主色: #0a0a0a → #16161a → #22222e (階層的な暗さ)
-- テキスト: #f5f5f6 (メイン) → #a1a1aa (2次) → #6b6b7a (3次)
-- アクセント推奨: 紫系 #a78bfa→#7c3aed (Claude風) / 青系 #60a5fa→#2563eb (Genspark風) / 緑系 #4ade80→#16a34a (Vercel風)
-- 意味色: 成功 #4ade80 / 警告 #fbbf24 / エラー #f87171 / 情報 #60a5fa
+## モダンダークテーマ
+- ベース: #08-0f (階層的な暗さ)
+- ボーダー: rgba(255,255,255,.06-.14) で境界を控えめに
+- テキスト: 高コントラスト (#f5f5f6) → セカンダリ (#a1a1aa) → ミュート (#6b6b7a)
+- アクセント色は1つ選ぶ (紫/青/緑/オレンジ等)
 
-## マイクロインタラクション
-- hover時: transform: translateY(-1px) + border-color 変化
-- active時: transform: scale(.98)
-- フォーカス: box-shadow: 0 0 0 3px アクセント色の 8% 透明版
-- 送信ボタンなどのCTAには 0 6-8px 20px アクセント色の 25% でグロー
+## タイポグラフィ
+- system-ui スタック優先
+- ヒエラルキー: 34-36px → 24-28px → 18-20px → 14.5px
+- letter-spacing: 見出しは -.02em (詰める)
+- line-height: 本文 1.6-1.72、見出し 1.2-1.3
+
+## スペーシング
+- 8px グリッド
+- コンポーネント内: 8-16px、コンポーネント間: 20-32px
+- 固定要素の下には padding-bottom で clearance 確保
+
+## インタラクション
+- 全 hover に .12-.18s トランジション
+- click時は scale(.98) 等でフィードバック
+- focus-visible な状態でアウトライン
 
 ## レイアウト
-- CSS Grid/Flex を優先。positioning tricks は避ける
-- max-width 800px程度でchat類のリーダビリティ確保
-- モバイル対応は 100dvh + viewport-fit=cover
-- 固定要素の下に配置される要素には padding-bottom で clearance を絶対値で確保（重なりバグ根絶）
+- Grid/Flex を優先、position:absolute は最小限
+- max-width でリーダビリティ確保 (本文 700-800px)
+- モバイル: 100dvh, viewport-fit=cover`,
 
-## タイポグラフィ階層
-- H1: 34-36px / 700 / -.028em
-- H2: 24-28px / 600 / -.02em
-- H3: 18-20px / 600 / -.015em
-- Body: 14.5px / 400 / line-height 1.65-1.72
-- Caption: 11-12px / 500 / letter-spacing .05em uppercase (時々)
-- Mono: 12-13px / ui-monospace
+  "CODING-SKILL": `# コーディング品質基準
 
-## 禁止事項
-- 虹色的な多色使い / 派手なグラデ乱用
-- ボーダーレスの単調フラット / 逆に線多すぎ
-- 装飾的アニメーション（実用性のないもの）
-- 全角記号の乱用`,
+## 全言語共通
+- **完全性**: プレースホルダー/TODO/省略なしで動く完成品を書く
+- **エラー処理**: エッジケース (null/空/巨大/異常入力) を最初に考える
+- **命名**: 意図が読める。tmp/data/foo は禁止
+- **コメント**: 「なぜ」を書く。「何を」は名前で表現する
+- **依存最小**: 標準ライブラリ優先。外部依存は目的が明確な時のみ
 
-  "CODING-SKILL": `# コーディング・スキル（本気の実装）
+## JavaScript / TypeScript
+- ES2022+ (const/let、async/await、optional chaining、nullish coalescing)
+- Promise を Chain せず await で
+- 型付けは JSDoc または TS strict
 
-## 絶対ルール
-- **本番グレードのコードのみ**。手抜きコード・プレースホルダー・「// TODO」禁止
-- エッジケース処理を最初に書く（null/undefined/空配列/例外）
-- モダン ES2022+ / Python 3.11+ / TypeScript strict モード相当
-- **自己文書化された命名**。コメントは「なぜ」を書き「何を」は書かない
-- 依存最小主義。標準ライブラリ優先、外部CDN禁止（要求されない限り）
+## Python
+- 3.11+ の型ヒント (typing/PEP604 union)
+- f-string、pathlib、dataclass
+- context manager (with)
 
-## 単一ファイル HTML アプリの作法
-- 最低300行 / 8KB以上を目標。それ以下は「手抜き」と判定される
-- 完全な CSS: リセット→変数→レイアウト→コンポーネント→ユーティリティ
-- 完全な JS: state → view → logic → event bindings
-- ダークテーマ + アクセント色 + 洗練された余白
-- キーボード操作対応（Enter/Escape/矢印キー等）
-- 読みやすい非同期パターン: async/await 優先、Promise chain は避ける
-- エラーハンドリング: try/catch + ユーザーへの視覚フィードバック
+## HTML/CSS
+- セマンティックHTML (header/main/nav/article/section)
+- CSS 変数で色/サイズを一元管理
+- モバイルファースト
 
-## コード生成前チェックリスト
-1. 完成したコードを頭の中で最初から最後まで実行し、バグを検出したか？
-2. UIは実際に触って気持ちよいか？（アニメーション、フィードバック）
-3. モバイル対応は？（タッチイベント、ビューポート）
-4. 30行未満の "サンプル" ではなく、本物として動く物になっているか？
-5. 大規模なら必ず file_upload で提供、チャットに丸ごと貼らない
+## 生成物の品質チェック
+1. コードは実際に動くか (js_exec で試せるものは試せ)
+2. 見た目/挙動が要求水準か (単なる骨組みではない)
+3. エッジケースを網羅しているか
+4. **要求されたスケールに合致しているか** (簡易ツールに対しては簡潔に、本格アプリには本格的に)`,
 
-## 品質基準（このどれかを満たさないなら再生成せよ）
-- コードが動作する（js_exec で確認できるものは確認）
-- 見た目が洗練されている（UI-SKILL 準拠）
-- インタラクションが自然
-- コメントが必要な箇所には配置されている`,
+  "WEB-RESEARCH-SKILL": `# Web リサーチの手法
 
-  "GAME-DEV-SKILL": `# ゲーム開発スキル（単一HTML）— 本物のゲームだけ作る
+## 標準フロー
+1. web_search でクエリ投入 (時事なら年号を含める)
+2. 結果から権威あるソース 2-3 件を選ぶ
+3. 選んだ URL を **同一ラウンドで並列** html_fetch
+4. 情報を統合し、ソース URL を引用しながら日本語で回答
 
-## 絶対要件
-- **最低400行以上、10KB以上のコード**（オセロ・チェスなら500行以上）
-- 60fps を維持する requestAnimationFrame + delta-time ループ
-- 状態管理・更新・描画を明確に分離
-- 入力: キーボード + マウス + タッチ すべて対応
-- 完全オフライン、CDN禁止
+## 権威判定
+- 公式ドキュメント、公式ブログ (.dev/.org/.gov)
+- 大手技術メディア (TechCrunch, The Verge, Ars Technica 等)
+- 学術/GitHub 公式リポジトリ
+- Wikipedia (基礎知識のみ)
 
-## オセロ（リバーシ）実装の完全仕様
-必須機能:
-1. **8x8ボード**を Canvas または CSS Grid で描画
-2. **有効手ハイライト**（現在の手番で置ける場所を薄い色で表示）
-3. **駒返しアニメーション**（0.4秒程度でフリップ）
-4. **α-β枝刈り付きミニマックス AI**
-   - Easy: 深さ2
-   - Normal: 深さ4 + 位置評価
-   - Hard: 深さ6 + 反復深化 + 位置評価 + 着手可能数 + 石差の重み付き総合
-5. **位置評価テーブル** (角:100, 角隣:-25, 辺:5, X-square:-40 等の重み)
-6. **スコア表示** (黒/白の石数リアルタイム)
-7. **難易度選択**（ドロップダウンかボタン）
-8. **リセット/新しいゲームボタン**
-9. **パス処理**（両者とも置けなくなるまで）
-10. **ゲーム終了判定と勝敗表示**
-11. **ヒント機能**（オプション）
-12. **打った手の履歴表示**（オプション）
-13. **手番インジケーター**
+避ける: SEOスパム、生成AIコンテンツ、広告過多
 
-## デザイン品質
-- **ボード**: 落ち着いた深緑 (#1a5f3f 等)、または木目調、間の線
-- **駒**: グラデーション + 光沢 + 影 (放射グラデで立体感)
-- **UI**: サイドパネルにスコア/難易度/リセット、下部にステータス
-- **アニメ**: 駒配置時にスケール pop、返し時にフリップ、ホバー時にプレビュー
-
-## 禁止コード例（絶対にこういう手抜きは出すな）
-\`\`\`html
-<!-- 悪い例: 100行以下、CSS 5行、AIロジックなし、駒返しなし -->
-<style>body{background:#2c3e50}#board{display:grid...}</style>
-<script>let board=Array(8).fill(0).map(()=>Array(8).fill(0));</script>
-\`\`\`
-これは AI オセロではなく「ボードを描画しただけの物体」。**絶対にこのレベルのコードを出すな**。
-
-## 良い例のスケッチ
-- CSS 60行以上（変数、リセット、レイアウト、アニメーション、レスポンシブ）
-- JS 300行以上（状態、描画、有効手計算、駒返し、AI、UI更新、イベント）
-- HTML 40行以上（複数のUI要素、コントロール、情報表示）`,
-
-  "WEB-RESEARCH-SKILL": `# Web リサーチ・スキル
-
-## 基本フロー
-1. web_search でトピック検索（年号を含める：時事なら "2026" 等）
-2. 結果から権威あるソース 1-3 件を選ぶ
-3. **並列で** html_fetch × 複数（同一ラウンドで複数ブロック）
-4. 2ソース以上でクロス検証
-5. 引用付きで日本語回答
-
-## 権威あるソースの見分け方
-- 公式ドキュメント（〜.dev, 〜.org 等）
-- 大手技術メディア (TechCrunch, Ars Technica, The Verge 等)
-- 学術サイト (arxiv.org, papers, scholar)
-- GitHub 公式リポジトリ
-- Wikipedia (フォールバック)
-
-避けるべき: SEO低品質サイト、広告だらけのブログ、生成AIが書いたっぽい内容
+## 情報統合
+- 2ソース以上でクロス検証
+- 相違点があればそれも明示
+- 主観と事実を区別
 
 ## 引用形式
-- 本文中: 「〜という事実がある[[React公式](https://react.dev/blog/...)]」
-- 末尾: **## 参考** セクションでリスト化
+本文中で [ソース名](URL) を挟むか、末尾に ## 参考 セクション`,
 
-## 深掘り例
-質問「React 19 の主要機能」
-→ web_search "React 19 features"
-→ html_fetch (react.dev/blog/react-19)
-→ html_fetch (残り2件を並列取得)
-→ 各記事から具体的な機能名・コード例を抽出
-→ Actions, useOptimistic, Server Components 等を実例付き解説`,
-
-  "PARALLEL-THINK-SKILL": `# 並列思考スキル
+  "PARALLEL-THINK-SKILL": `# 並列思考の使いこなし
 
 ## 適用ケース
-- **アーキテクチャ選定**: マイクロサービス vs モノリス
-- **技術選定**: Rust vs Go, Vue vs React
-- **設計上の判断**: DB 正規化度、キャッシュ戦略、認証方式
-- **主観的判断**: どのUIパターンがユーザーフレンドリー？
-- **難問**: アルゴリズム設計、複雑な最適化
+- **アーキテクチャ選定** (マイクロサービスか、モノリスか)
+- **技術スタック比較** (どのフレームワークか)
+- **設計判断** (どのデータモデルか)
+- **主観的評価** (どのアプローチがよいか)
+- **難問** (最適化・アルゴリズム設計)
+- **タスク開始時の全体戦略立案** ← Orby は常にここから始めることを推奨
 
 ## 使うモデル
-- scira-nemotron-3-super (NVIDIA - 深い技術理解)
-- gpt-4 (OpenAI - バランス)
-- deepseek-r1 (推論特化)
+モデルは目的で選ぶ:
+- **deepseek-r1**: 論理推論・数学
+- **gpt-4**: 深い分析・多面的検討
+- **scira-nemotron-3-super**: 技術判断
+- **gpt-4o**: バランス
+- **felo-chat**: 詳細説明
 
 ## プロンプト設計
-- 質問を明確に絞る（1つの争点にフォーカス）
-- 「以下の観点で答えて」と観点を列挙: 性能、開発速度、エコシステム、学習コスト
-- 200 words 以内と指定
+- 1つの争点にフォーカス
+- 観点を列挙 (性能、開発速度、保守性、コスト等)
+- 200 words 以内と明示
 
-## 統合の仕方
-- 各モデルの**共通点**を抽出（強い信頼性）
-- **相違点**を明示（意見が割れる = 難しい問題）
-- 最鋭い理由付けを持つモデルを引用
-- 単純な平均化はダメ（意見の質を評価せよ）`,
+## 統合
+- 共通点 = 信頼性高
+- 相違点 = 難しい問題、両論明示
+- 最鋭い理由付けを引用`,
 
-  "IMAGE-SKILL": `# 画像生成スキル
+  "IMAGE-SKILL": `# 画像生成プロンプト
 
-## プロンプト構成の公式
-[主題] + [スタイル] + [ライティング] + [構図] + [カメラ的詳細] + [雰囲気]
-
-例: "Tokyo Tower at magical dusk, cinematic realism, warm golden hour lighting with soft neon accents, low-angle wide composition, shallow depth of field 35mm, ethereal fantasy atmosphere"
+## 構造
+[主題] + [スタイル] + [ライティング] + [構図] + [質感/雰囲気]
 
 ## スタイル語彙
-- Realism系: cinematic realism, photorealistic, film photography, editorial
-- Illustration系: watercolor, ink wash, comic book, anime cel-shaded
-- 3D系: octane render, unreal engine, cinema 4d, blender
-- 芸術系: oil painting, art nouveau, cyberpunk aesthetic, minimal geometric
+- Photo系: cinematic realism, photorealistic, film photography
+- 絵画系: watercolor, oil painting, ink wash
+- 3D系: octane render, unreal engine, blender
+- Illustration: anime, comic book, minimalist geometric
 
-## ライティング語彙
-- golden hour, blue hour, moonlight, neon glow, volumetric lighting, rim lighting, chiaroscuro
+## ライティング
+- golden hour, blue hour, moonlight, neon glow, volumetric lighting, rim lighting
 
-## サイズ選択
-- SNS 縦: 1024x1536 (2:3)
-- SNS 正方: 1024x1024
-- 横長ワイド: 1536x1024 (3:2)
-- ヒーロー画像: 2048x1024 (2:1)
+## サイズ
+- SNS縦 1024x1536 (2:3)
+- 正方 1024x1024
+- 横長 1536x1024
+- ヒーロー 2048x1024`,
 
-## 埋め込み方
-markdown で: ![説明](URL)
-Pollinations の URL はそのまま使える`,
+  "TASK-DECOMPOSITION-SKILL": `# タスク分解スキル
 
-  "REFACTOR-SKILL": `# リファクタリング・スキル
+## 大原則
+複雑タスクは必ず分解してから実行する。
 
-## 段階
-1. **読解**: read_file で対象コードを取得
-2. **問題特定**: 
-   - 命名の悪さ
-   - 責務が肥大した関数（>50行）
-   - 重複コード
-   - マジックナンバー / マジックストリング
-   - ネスト深すぎ (>3階層)
-   - Optional Chaining/Null 処理漏れ
-3. **改善案立案**: 各問題への具体的手法
-4. **リファクタリング実施**: edit_file または file_upload で改良版
+## 分解手順
+1. **ゴール定義**: 完了状態を明確に (何が成果物か)
+2. **サブタスク列挙**: 独立した実行単位に分ける
+3. **依存関係**: 順序と並列可能性を洗い出す
+4. **各サブタスクにツール割当**: どのツールで実行するか
+5. **統合手順**: 全サブタスク結果をどう組み合わせるか
 
-## 一般的な改善パターン
-- **抽出**: 大関数 → 意図が明確な小関数群
-- **命名**: get_x → getUserById, tmp → currentSelection
-- **早期リターン**: else の入れ子を解消
-- **定数化**: マジックナンバー → 名前付き定数
-- **型付け**: JSDoc または TypeScript
-- **エラー処理**: throw new SpecificError()
+## 並列化の判断
+- 依存なし → 同一ラウンドで並列実行 (複数 tool ブロック)
+- 依存あり → 順次ラウンド
 
-## 前後比較の提示
-"変更前:" コードブロック → "変更後:" コードブロック → "変更理由:" 箇条書き`,
+## 例: 「AとBを比較する記事を書いて」
+- サブタスク1: A について web_search + html_fetch
+- サブタスク2: B について web_search + html_fetch (並列)
+- サブタスク3: parallel_think で観点整理
+- サブタスク4: 統合して記事化 file_upload`,
 
-  "DEBUG-SKILL": `# デバッグ・スキル
+  "DEBUG-SKILL": `# デバッグ手法
 
 ## 系統的アプローチ
 1. **再現**: エラーが出る最小コードを js_exec で試す
-2. **仮説**: 何が起きているか3つ仮説を立てる
-3. **検証**: 各仮説を js_exec で1つずつ検証
-4. **修正**: 根本原因を修正（症状だけを消すな）
-5. **回帰テスト**: 修正後にも js_exec で動作確認
+2. **観察**: エラーメッセージ・Stack trace・実際の出力を確認
+3. **仮説**: 原因の候補を3つ挙げる
+4. **検証**: 各仮説を js_exec や read_file で確認
+5. **修正**: 根本原因を修正 (症状だけ消すな)
+6. **回帰確認**: 修正後に動作を確認
 
 ## よくあるバグパターン
-- **JS**: undefined プロパティアクセス、非同期の Promise 忘れ、this 束縛、比較 == vs ===
-- **CSS**: box-sizing 忘れ、z-index の stacking context、flex/grid の overflow
-- **HTML**: id 重複、iframe sandbox 属性、CORS
-- **論理**: off-by-one、境界条件（0件、1件、最大件数）
-- **タイミング**: レースコンディション、DOM ready 前アクセス
+- 型不一致 (undefined/null アクセス、比較 == vs ===)
+- 非同期 (Promise 忘れ、await 忘れ)
+- スコープ (this、closure、hoisting)
+- 境界値 (0件、1件、最大件数、負数)
+- タイミング (DOM ready 前アクセス、レース)
 
-## エラーメッセージ読解
-- Stack trace の最上段が発生源
-- "Cannot read property 'x' of undefined" → 直前の値が null/undefined
-- "Maximum call stack" → 無限再帰
-- "SyntaxError" → 括弧・引用符の対応
+## 報告
+「原因: X。修正: Y。理由: Z。」の3点セット`,
 
-## 修正前後の動作説明
-「バグ原因: X。修正: Y。理由: Z。」の3点セットで報告`,
+  "REFACTOR-SKILL": `# リファクタリング原則
 
-  "API-DESIGN-SKILL": `# API 設計スキル
+## 対象コードの評価軸
+- 命名の明快さ
+- 関数の単一責務性
+- 重複の有無
+- ネスト深度 (>3階層は要注意)
+- 依存関係の明示性
+
+## 一般的手法
+- **抽出**: 大関数 → 意図明確な小関数群
+- **命名改善**: get_x → getUserById
+- **早期リターン**: else 入れ子を解消
+- **定数化**: マジックナンバーに名前を
+- **不変化**: mutation を最小限に
+
+## 手順
+1. read_file で対象取得
+2. 問題を箇条書きで列挙
+3. 改善案を提示
+4. edit_file または新規 file_upload で改良版
+5. 変更理由を説明`,
+
+  "DATA-ANALYSIS-SKILL": `# データ分析フロー
+
+## ステップ
+1. **確認**: read_file/extract_data でデータ取得
+2. **理解**: 行数・列数・型・欠損値・範囲
+3. **分析**: js_exec で統計 (平均/中央値/分散/相関)
+4. **発見**: パターン・外れ値・傾向を抽出
+5. **報告**: 発見を優先度順に日本語で
+
+## JS での CSV/JSON 処理
+- CSV: split('\\n') → split(',')、ヘッダー行を分離
+- 型変換: Number(), 判定 isNaN
+- 統計: reduce, sort でパーセンタイル
+
+## 結果提示
+- Markdown 表で数値サマリー
+- 発見 3-5 個を強調
+- 「なぜそう見えるか」の解釈まで含める`,
+
+  "API-DESIGN-SKILL": `# API 設計
 
 ## RESTful 原則
-- 名詞ベースのURL（動詞は HTTP メソッドで）
-- GET /users, POST /users, GET /users/:id, PUT /users/:id, DELETE /users/:id
-- ネスト: /users/:id/posts (2階層まで)
-- **バージョニング**: /v1/users, /v2/users
+- 名詞ベース URL
+- 動詞は HTTP メソッドで (GET/POST/PUT/PATCH/DELETE)
+- バージョニング: /v1/...
+- ネスト: 2階層まで
 
 ## HTTP ステータス
-- 200 OK / 201 Created / 204 No Content
-- 400 Bad Request / 401 Unauthorized / 403 Forbidden / 404 Not Found / 409 Conflict
-- 422 Unprocessable Entity (validation)
-- 429 Too Many Requests (rate limit)
-- 500 Internal Server Error / 502 Bad Gateway / 503 Service Unavailable
+- 2xx: 成功
+- 4xx: クライアントエラー
+- 5xx: サーバーエラー
 
 ## レスポンス形式
-\`\`\`json
-{ "data": {...}, "meta": {"page":1,"total":100}, "links": {"next":"..."} }
-\`\`\`
-エラー:
-\`\`\`json
-{ "error": {"code":"VALIDATION_ERROR","message":"...","field":"email"} }
-\`\`\`
+data / meta / links / error の統一
 
 ## 認証
 - Bearer JWT が標準
-- ヘッダー: Authorization: Bearer <token>
-- Refresh token 分離
+- Refresh token 分離`,
 
-## ドキュメント
-- OpenAPI 3.0 (Swagger) スキーマ
-- リクエスト/レスポンス例を必ず添付`,
-
-  "DATA-ANALYSIS-SKILL": `# データ分析スキル
+  "SYSTEM-DESIGN-SKILL": `# システム設計
 
 ## フロー
-1. **確認**: read_file/extract_data でデータ取得、先頭数行を確認
-2. **理解**: カラム数、行数、型、欠損値、範囲
-3. **可視化**: js_exec で簡易統計（平均、中央値、標準偏差）
-4. **解釈**: パターン、外れ値、傾向を発見
-5. **報告**: 発見を優先度順に日本語で
+1. 要件明確化 (機能 + 非機能)
+2. キャパシティ試算 (QPS/データ量/帯域)
+3. API 設計
+4. データモデル
+5. アーキテクチャ図
+6. スケーリング戦略
+7. 信頼性 (冗長化・監視)
 
-## JSON/CSV 処理
-\`\`\`js
-// CSV parse (simple)
-const rows = csv.trim().split('\\n').map(l => l.split(','));
-const header = rows[0], data = rows.slice(1);
+## パターン
+- キャッシュ (Cache-aside 等)
+- キュー (非同期・DLQ)
+- ロードバランス (L4/L7)
+- DB (replica/shard)
+- CAP 定理`,
 
-// 統計
-const nums = data.map(r => Number(r[colIdx])).filter(n => !isNaN(n));
-const avg = nums.reduce((a,b)=>a+b,0) / nums.length;
-const sorted = [...nums].sort((a,b)=>a-b);
-const median = sorted[Math.floor(sorted.length/2)];
-\`\`\`
+  "ALGORITHM-SKILL": `# アルゴリズム実装ライブラリ
 
-## 表示テクニック
-- Markdown テーブルで結果まとめ
-- 大きい数値はカンマ区切り、パーセントは％付き
-- 発見は上位3-5個を強調
-- 「なぜ」を含めて解釈（ただの数字提示ではダメ）`,
+## 探索
+- BFS/DFS: グラフ・木の探索
+- Binary Search: 単調な区間
+- Dijkstra: 重み付き最短経路
 
-  "SYSTEM-DESIGN-SKILL": `# システム設計スキル
+## ソート・順序
+- Quick/Merge: 汎用 O(N log N)
+- Topological Sort: 依存順序
 
-## 大規模設計フロー
-1. **要件明確化**: 機能要件 + 非機能要件（負荷、可用性、レイテンシ）
-2. **キャパシティ**: QPS、データ量、帯域幅の概算
-3. **API 設計**: 主要エンドポイント
-4. **データモデル**: スキーマ、インデックス、正規化度
-5. **アーキテクチャ**: コンポーネント図、通信パターン
-6. **スケーリング**: シャーディング、キャッシュ、CDN
-7. **信頼性**: 冗長化、フェイルオーバー、モニタリング
+## DP
+- メモ化 (再帰 + キャッシュ)
+- Tabulation (反復)
+- 典型: Knapsack, LCS, Edit Distance
 
-## 定番パターン
-- **キャッシュ**: Cache-aside, Write-through, Write-behind
-- **キュー**: 非同期処理、バックプレッシャー、DLQ
-- **ロードバランス**: L4 vs L7, sticky session
-- **DB**: read replica, master-slave, master-master, sharding
-- **CAP**: 3つのうち2つ選ぶ (CP or AP)
+## ゲームAI (要求されたら)
+- Minimax + α-β 枝刈り
+- 反復深化、ムーブオーダリング
+- 位置評価 + 着手可能数 + 材料
 
-## 図解のASCII/mermaid
-mermaid graph TD で書ける場合はそれで表現：
-\`\`\`
-graph TD
-  Client --> LB[Load Balancer]
-  LB --> API1[API Server 1]
-  LB --> API2[API Server 2]
-  API1 --> Cache[(Redis)]
-  API1 --> DB[(PostgreSQL)]
-\`\`\``,
+## 計算量チェック
+- N=10^6 まで: O(N log N)
+- N=10^4 まで: O(N^2)
+- N=100 まで: O(N^3)`,
 
-  "ALGORITHM-SKILL": `# アルゴリズム・スキル
+  "TESTING-SKILL": `# テスト戦略
 
-## よく必要になるアルゴリズムと実装
-- **探索**: DFS/BFS, Binary Search, Dijkstra
-- **ソート**: Quick/Merge/Heap, Topological
-- **DP**: メモ化、Knapsack, LCS, Edit Distance
-- **グラフ**: MST (Kruskal/Prim), Bellman-Ford, Union-Find
-- **ゲームAI**: Minimax + α-β pruning, MCTS
-- **文字列**: KMP, Rabin-Karp, Trie
-- **数値**: GCD, Sieve, Modular arithmetic
+## 種類
+- Unit: 純粋関数・コアロジック
+- Integration: モジュール連携
+- E2E: ユーザーフロー
 
-## Minimax + α-β pruning 実装テンプレート (ゲームAI必須)
-\`\`\`js
-function minimax(state, depth, alpha, beta, maximizing) {
-  if (depth === 0 || isTerminal(state)) return evaluate(state);
-  const moves = generateMoves(state, maximizing ? PLAYER : OPPONENT);
-  if (maximizing) {
-    let value = -Infinity;
-    for (const m of moves) {
-      value = Math.max(value, minimax(applyMove(state, m), depth-1, alpha, beta, false));
-      alpha = Math.max(alpha, value);
-      if (alpha >= beta) break; // β cutoff
-    }
-    return value;
-  } else {
-    let value = Infinity;
-    for (const m of moves) {
-      value = Math.min(value, minimax(applyMove(state, m), depth-1, alpha, beta, true));
-      beta = Math.min(beta, value);
-      if (alpha >= beta) break; // α cutoff
-    }
-    return value;
-  }
-}
-// ムーブオーダリング（角優先など）で更に高速化
-\`\`\`
+## js_exec でのアサーション
+- assert(cond, msg) パターン
+- 正常系 + 境界 + 異常系
 
-## 計算量
-- 実装前に必ず時間・空間計算量を評価
-- N=10^6 なら O(N log N) まで、O(N^2) は 10^4 まで`,
-
-  "TESTING-SKILL": `# テスト・スキル
-
-## テスト戦略
-- **ユニットテスト**: 純粋関数、コアロジック
-- **統合テスト**: モジュール間の連携
-- **E2Eテスト**: ユーザーフロー全体
-
-## js_exec で軽量テスト
-\`\`\`js
-function assert(cond, msg) {
-  if (!cond) throw new Error("FAIL: " + msg);
-  console.log("OK: " + msg);
-}
-// テスト対象
-function add(a,b) { return a+b; }
-// テスト
-assert(add(1,2) === 3, "add positives");
-assert(add(-1,1) === 0, "add negative + positive");
-assert(add(0,0) === 0, "add zeros");
-\`\`\`
-
-## テストケース設計
-- 正常系: 想定通りの入力
-- 境界: 0, 1, 最大値
-- 異常系: null, undefined, 型違い, 空配列
-- エラー: 例外が正しく投げられるか`,
+## カバーすべきケース
+- 期待通りの入力
+- 境界: 0, 1, 最大
+- 異常: null, 型違い, 空配列
+- 例外が投げられるか`,
 };
 
 // ============================================================================
@@ -482,7 +409,7 @@ async function nieChatStream({ model, messages, temperature = 0.7 }, onDelta) {
 }
 
 // ============================================================================
-// Tools
+// TOOLS
 // ============================================================================
 
 function decodeXmlEntities(s) {
@@ -527,7 +454,7 @@ async function searchBing(query, max_results) {
 
 async function searchWikipedia(query, max_results, lang = "en") {
   const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=${max_results}&utf8=1`;
-  const r = await fetch(url, { headers: { "User-Agent": "Orby/5.0" } });
+  const r = await fetch(url, { headers: { "User-Agent": "Orby/6.0" } });
   const j = await r.json();
   return (j.query?.search || []).map(s => ({
     title: s.title,
@@ -544,7 +471,7 @@ async function tool_web_search({ query, max_results = 6 }) {
   try {
     const isJa = /[\u3040-\u30ff\u4e00-\u9fff]/.test(query);
     const wiki = await searchWikipedia(query, max_results, isJa ? "ja" : "en");
-    if (wiki.length > 0) return { query, source: "wikipedia", results: wiki, note: "Bing empty" };
+    if (wiki.length > 0) return { query, source: "wikipedia", results: wiki };
   } catch (_) {}
   return { query, source: "none", results: [] };
 }
@@ -577,8 +504,8 @@ async function tool_html_fetch({ url, mode = "text", max_chars = 12000 }) {
   return {
     url, status: r.status,
     title: titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "",
-    text: text.slice(0, max_chars),
-    length: text.length, truncated: text.length > max_chars,
+    text: text.slice(0, max_chars), length: text.length,
+    truncated: text.length > max_chars,
   };
 }
 
@@ -612,46 +539,40 @@ async function tool_js_exec({ code, timeout_ms = 5000 }) {
 }
 
 async function tool_load_skill(args) {
-  // Robust: accept name, skill, id, skill_id, skill_ids, names
   const rawNames = args.name || args.skill || args.id || args.skill_id || args.skill_ids || args.names || args.skills;
   const list = Array.isArray(rawNames) ? rawNames : (rawNames ? [rawNames] : []);
-  if (list.length === 0) {
-    return { ok: false, error: "No skill name provided", available: Object.keys(SKILLS) };
-  }
-  const loaded = [];
-  const notFound = [];
+  if (list.length === 0) return { ok: false, error: "No skill name provided", available: Object.keys(SKILLS) };
+  const loaded = [], notFound = [];
   for (const n of list) {
     const key = String(n).replace(/\.md$/i, "").toUpperCase().replace(/[_\s]/g, "-");
-    const content = SKILLS[key];
-    if (content) loaded.push({ name: key, content });
+    if (SKILLS[key]) loaded.push({ name: key, content: SKILLS[key] });
     else notFound.push(String(n));
   }
-  if (loaded.length === 0) {
-    return { ok: false, error: `Unknown skill(s): ${notFound.join(", ")}`, available: Object.keys(SKILLS) };
-  }
-  return {
-    ok: true,
-    loaded_count: loaded.length,
-    skills: loaded,
-    not_found: notFound.length ? notFound : undefined,
-  };
+  if (loaded.length === 0) return { ok: false, error: `Unknown skill(s): ${notFound.join(", ")}`, available: Object.keys(SKILLS) };
+  return { ok: true, loaded_count: loaded.length, skills: loaded, not_found: notFound.length ? notFound : undefined };
 }
 
-async function tool_parallel_think({ prompt, models }) {
-  const list = (models && models.length) ? models : ["scira-nemotron-3-super", "gpt-4", "deepseek-r1"];
+async function tool_parallel_think(args) {
+  // Accept flexible arg names
+  const prompt = args.prompt || args.question || args.query || args.text || "";
+  const list = (Array.isArray(args.models) && args.models.length) ? args.models
+             : ["deepseek-r1", "gpt-4", "scira-nemotron-3-super"];
+  if (!prompt) return { ok: false, error: "prompt required" };
+
   const settled = await Promise.allSettled(list.map(m =>
     nieChat({
       model: m,
       messages: [
-        { role: "system", content: "簡潔かつ専門家として答える。要点重視、200 words 以内。" },
+        { role: "system", content: "簡潔かつ専門家として日本語で回答。要点重視、300字以内。" },
         { role: "user", content: prompt },
       ],
     })
   ));
   return {
-    prompt,
+    ok: true, prompt, models_used: list,
     answers: settled.map((s, i) => ({
       model: list[i],
+      profile: MODEL_PROFILE[list[i]]?.strength || "",
       ok: s.status === "fulfilled",
       content: s.status === "fulfilled"
         ? (s.value?.content || s.value?.choices?.[0]?.message?.content || "")
@@ -680,17 +601,15 @@ function guessMime(filename) {
 }
 
 async function tool_file_upload(args) {
-  // Accept filename/name/file_name, content/text/body
   const filename = args.filename || args.name || args.file_name || "output.txt";
-  const content = args.content ?? args.text ?? args.body ?? args.data ?? "";
-  const mime = args.mime || args.mime_type || args.content_type;
+  const content  = args.content ?? args.text ?? args.body ?? args.data ?? "";
+  const mime     = args.mime || args.mime_type || args.content_type;
   const id = crypto.randomBytes(8).toString("hex");
   const m = mime || guessMime(filename);
   UPLOADED_FILES.set(id, { name: filename, content: String(content), mime: m });
-  const bytes = Buffer.byteLength(String(content), "utf8");
   return {
     id, filename, mime: m,
-    size: bytes,
+    size: Buffer.byteLength(String(content), "utf8"),
     lines: (String(content).match(/\n/g) || []).length + 1,
     language: filename.split(".").pop() || "text",
     download_url: `/api/files/${id}`,
@@ -717,37 +636,32 @@ async function tool_read_file(args) {
 }
 
 async function tool_edit_file(args) {
-  // Edit an existing generated file (file_upload'd) with find/replace or full rewrite
   const id = args.file_id || args.id;
   if (!id) return { ok: false, error: "file_id required" };
   const f = UPLOADED_FILES.get(id);
   if (!f) return { ok: false, error: `Unknown file: ${id}` };
   let newContent;
-  if (args.new_content != null) {
-    newContent = String(args.new_content);
-  } else if (args.find != null && args.replace != null) {
+  if (args.new_content != null) newContent = String(args.new_content);
+  else if (args.find != null && args.replace != null) {
     const flags = args.replace_all === false ? "" : "g";
     try {
       const re = new RegExp(args.find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
       newContent = f.content.replace(re, String(args.replace));
     } catch (e) { return { ok: false, error: "invalid regex: " + e.message }; }
-  } else {
-    return { ok: false, error: "Provide new_content OR (find + replace)" };
-  }
+  } else return { ok: false, error: "Provide new_content OR (find + replace)" };
   UPLOADED_FILES.set(id, { ...f, content: newContent });
   return {
     ok: true, id, filename: f.name,
     old_size: Buffer.byteLength(f.content, "utf8"),
     new_size: Buffer.byteLength(newContent, "utf8"),
     lines: (newContent.match(/\n/g) || []).length + 1,
-    download_url: `/api/files/${id}`,
-    preview_url: `/api/files/${id}?inline=1`,
+    download_url: `/api/files/${id}`, preview_url: `/api/files/${id}?inline=1`,
   };
 }
 
 async function tool_extract_data(args) {
   const text = args.text || args.content || "";
-  const format = args.format || "json"; // json|csv|urls|numbers|emails
+  const format = args.format || "json";
   const results = { format, extracted: [] };
   if (format === "urls") {
     results.extracted = [...new Set(text.match(/https?:\/\/[^\s"'<>()]+/g) || [])];
@@ -757,14 +671,10 @@ async function tool_extract_data(args) {
     results.extracted = [...new Set(text.match(/[\w.-]+@[\w.-]+\.\w+/gi) || [])];
   } else if (format === "json") {
     const matches = text.match(/\{[\s\S]*?\}|\[[\s\S]*?\]/g) || [];
-    for (const m of matches) {
-      try { results.extracted.push(JSON.parse(m)); } catch (_) {}
-    }
+    for (const m of matches) { try { results.extracted.push(JSON.parse(m)); } catch (_) {} }
   } else if (format === "csv") {
     const rows = text.trim().split(/\r?\n/).map(l => l.split(","));
-    results.extracted = rows;
-    results.header = rows[0];
-    results.row_count = rows.length - 1;
+    results.extracted = rows; results.header = rows[0]; results.row_count = rows.length - 1;
   }
   results.count = Array.isArray(results.extracted) ? results.extracted.length : 0;
   return results;
@@ -772,20 +682,18 @@ async function tool_extract_data(args) {
 
 async function tool_summarize(args) {
   const text = args.text || args.content || "";
-  const style = args.style || "bullets"; // bullets|paragraph|tldr
+  const style = args.style || "bullets";
   const max_points = args.max_points || 5;
   if (!text.trim()) return { ok: false, error: "no text" };
-  // Use lightweight model for summarization
   const prompt = style === "tldr"
     ? `以下の文章を、日本語1文（80字以内）で要約せよ:\n\n${text.slice(0, 8000)}`
     : style === "paragraph"
     ? `以下の文章を、日本語で3-5文の段落として要約せよ:\n\n${text.slice(0, 8000)}`
-    : `以下の文章を、日本語の箇条書き${max_points}項目以内で要約せよ。各項目は1行:\n\n${text.slice(0, 8000)}`;
+    : `以下の文章を、日本語の箇条書き${max_points}項目以内で要約せよ:\n\n${text.slice(0, 8000)}`;
   try {
     const j = await nieChat({
-      model: args.model || "scira-gemini-3.1-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
+      model: args.model || pickModelFor("summary"),
+      messages: [{ role: "user", content: prompt }], temperature: 0.3,
     });
     const summary = j.content || j.choices?.[0]?.message?.content || "";
     return { ok: true, style, summary, source_chars: text.length };
@@ -797,11 +705,8 @@ async function tool_memory_store({ key, value }) {
   MEMORY.set(String(key), String(value));
   return { ok: true, key, stored: true, size: MEMORY.size };
 }
-
 async function tool_memory_recall({ key }) {
-  if (!key) {
-    return { ok: true, keys: [...MEMORY.keys()] };
-  }
+  if (!key) return { ok: true, keys: [...MEMORY.keys()] };
   const v = MEMORY.get(String(key));
   if (v === undefined) return { ok: false, error: `no memory for key: ${key}` };
   return { ok: true, key, value: v };
@@ -818,33 +723,32 @@ function expandShortcuts(text) {
 }
 
 // ============================================================================
-// Tool registry
+// Tool registry & aliases
 // ============================================================================
 const TOOLS = {
-  web_search:      { run: tool_web_search,      desc: "Bing RSS Web 検索 (Wikipedia フォールバック)" },
-  html_fetch:      { run: tool_html_fetch,      desc: "URL 本文取得 (article/main 抽出)" },
-  js_exec:         { run: tool_js_exec,         desc: "JS サンドボックス実行 (async 対応)" },
-  load_skill:      { run: tool_load_skill,      desc: "スキル読み込み (単一 or 複数)" },
-  parallel_think:  { run: tool_parallel_think,  desc: "複数モデル並列思考" },
-  image_generate:  { run: tool_image_generate,  desc: "Pollinations 画像生成" },
-  file_upload:     { run: tool_file_upload,     desc: "生成物をダウンロード可能ファイルとして提供" },
-  read_file:       { run: tool_read_file,       desc: "添付/生成ファイルを読む" },
-  edit_file:       { run: tool_edit_file,       desc: "生成済みファイルを編集 (find/replace or 全書換)" },
-  extract_data:    { run: tool_extract_data,    desc: "テキストから URL/数値/メール/JSON/CSV 抽出" },
-  summarize:       { run: tool_summarize,       desc: "テキスト要約 (bullets/paragraph/tldr)" },
-  memory_store:    { run: tool_memory_store,    desc: "セッション内メモリに key/value 保存" },
-  memory_recall:   { run: tool_memory_recall,   desc: "セッション内メモリから value 取得 (key省略で全key)" },
-  shorten_element: { run: tool_shorten_element, desc: "巨大テキストを @alias に短縮" },
+  web_search:      { run: tool_web_search },
+  html_fetch:      { run: tool_html_fetch },
+  js_exec:         { run: tool_js_exec },
+  load_skill:      { run: tool_load_skill },
+  parallel_think:  { run: tool_parallel_think },
+  image_generate:  { run: tool_image_generate },
+  file_upload:     { run: tool_file_upload },
+  read_file:       { run: tool_read_file },
+  edit_file:       { run: tool_edit_file },
+  extract_data:    { run: tool_extract_data },
+  summarize:       { run: tool_summarize },
+  memory_store:    { run: tool_memory_store },
+  memory_recall:   { run: tool_memory_recall },
+  shorten_element: { run: tool_shorten_element },
 };
 
-// Tool name aliases the model might use by mistake
 const TOOL_ALIASES = {
   "search": "web_search", "google": "web_search", "web": "web_search", "bing": "web_search",
   "fetch": "html_fetch", "get_page": "html_fetch", "fetch_url": "html_fetch", "curl": "html_fetch", "browse": "html_fetch",
   "exec": "js_exec", "eval": "js_exec", "run_js": "js_exec", "execute": "js_exec", "run_code": "js_exec", "python": "js_exec",
   "skill": "load_skill", "get_skill": "load_skill", "read_skill": "load_skill", "skills": "load_skill", "load": "load_skill",
   "think": "parallel_think", "multi_think": "parallel_think", "consult": "parallel_think", "ask_multi": "parallel_think",
-  "generate_image": "image_generate", "image": "image_generate", "img": "image_generate", "draw": "image_generate", "make_image": "image_generate",
+  "generate_image": "image_generate", "image": "image_generate", "img": "image_generate", "draw": "image_generate",
   "upload": "file_upload", "save_file": "file_upload", "create_file": "file_upload", "write": "file_upload", "output_file": "file_upload",
   "read": "read_file", "open_file": "read_file", "load_file": "read_file", "cat": "read_file",
   "edit": "edit_file", "update_file": "edit_file", "modify_file": "edit_file", "patch_file": "edit_file",
@@ -856,154 +760,159 @@ const TOOL_ALIASES = {
 };
 
 // ============================================================================
-// System prompt
+// System prompt — universal, task-agnostic
 // ============================================================================
 function buildSystemPrompt(mainModel, attachments) {
   const attachSection = attachments && attachments.length > 0
     ? `
 
-## 📎 ユーザーが添付したファイル (${attachments.length} 件)
+## 📎 添付ファイル (${attachments.length} 件)
 ${attachments.map(a => `- id: **${a.id}** — "${a.name}" (${a.mime}, ${a.size} bytes)`).join("\n")}
 
-ユーザーの質問がファイルに関連する場合、必ず最初に read_file で内容を確認してください:
-\`\`\`tool
-{"tool":"read_file","args":{"attachment_id":"<id>"}}
-\`\`\``
+ファイル内容は read_file で読める。ユーザーの質問がファイルに関連するなら最初に読む。`
     : "";
 
-  return `あなたは "Orby" — 世界最高水準の自律コーディング・エージェント。メインモデル: ${mainModel}。**全ての応答は日本語で。**
+  return `あなたは "Orby" — 汎用最強の自律型 AI エージェント。**すべての応答は日本語で。**
 
-═══════════════════════════════════════════════════════
-🎯 本質
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
+🎯 あなたの本質
+═══════════════════════════════════════════════════════════════
 
-あなたは怠けない、妥協しない、諦めない。ユーザーは**世界最高品質**を求めており、あなたはそれ以下を絶対に出さない。
+あなたは Genspark を超える性能を目指す、あらゆるタスクに最適解を導くエージェント。
 
-- **手抜きは犯罪**: 100行程度の中途半端なコードは絶対禁止
-- **深掘り必須**: 検索したら interesting URL は必ず html_fetch まで連鎖
-- **並列で考えろ**: 難問なら parallel_think で複数モデル相談
-- **検証**: js_exec で動作確認できるコードは必ず確認
-- **完璧まで再試行**: 品質が足りなければ何度でもやり直せ
+- **タスクの本質を理解する**: ユーザーが本当に求めているものを見極める
+- **適切な深さで対応する**: 簡単な質問には簡潔に、複雑なタスクには徹底的に
+- **道具の使い方を知る**: 各ツールを適材適所で活用
+- **推論を惜しまない**: 難しい判断は parallel_think で複数モデルの知恵を借りる
+- **検証を怠らない**: 事実は web_search、動作は js_exec で確認
 
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
+🧠 タスクの進め方（フレームワーク）
+═══════════════════════════════════════════════════════════════
+
+**Step 1: タスクの複雑度を判定する**
+
+- **軽量**: 挨拶、簡単な質問、雑談、既知の事実確認
+  → ツール不要または最小限。直接答える
+- **中量**: 情報収集、要約、単純な計算、簡易コード
+  → 1-2ツールで完結。web_search / js_exec / image_generate 等
+- **重量**: 複雑な実装、深い分析、比較検討、大規模タスク
+  → 最初に parallel_think で戦略を立てる → 分解 → 実行 → 統合
+
+**Step 2: 重量タスクなら parallel_think で戦略立案**
+
+複雑なタスクを始める前に、以下のような prompt で複数モデルに相談:
+
+\`\`\`tool
+{"tool":"parallel_think","args":{"prompt":"「〇〇を作って」というタスクをどう進めるべきか。必要な設計判断、要素、実装ステップを整理して。","models":["deepseek-r1","gpt-4","scira-nemotron-3-super"]}}
+\`\`\`
+
+その回答を統合してから、実装ラウンドに進む。
+
+**Step 3: 必要ならスキル読み込み**
+
+汎用スキルが13個ある:
+- UI-SKILL, CODING-SKILL, WEB-RESEARCH-SKILL, PARALLEL-THINK-SKILL, IMAGE-SKILL
+- TASK-DECOMPOSITION-SKILL, DEBUG-SKILL, REFACTOR-SKILL, DATA-ANALYSIS-SKILL
+- API-DESIGN-SKILL, SYSTEM-DESIGN-SKILL, ALGORITHM-SKILL, TESTING-SKILL
+
+タスクに合わせて 1-3 個を読み込む (**単一のツール呼び出しに配列で指定可能**)。ただしこれは強制ではない。既に何を書けばいいか明確なら省略してよい。
+
+**Step 4: 実装/実行**
+
+- コード生成: file_upload
+- 情報収集: web_search → html_fetch (並列可)
+- 動作確認: js_exec
+- 画像: image_generate
+- ファイル解析: read_file + extract_data / summarize / js_exec
+
+**Step 5: 検証と最終回答**
+
+- 事実確認できるものは確認
+- 生成物のリンクを示す
+- 参考にしたソース URL を引用
+
+═══════════════════════════════════════════════════════════════
 🔧 ツール呼び出しプロトコル
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
 
 \`\`\`tool
 {"tool":"<name>","args":{...}}
 \`\`\`
 
-**厳守事項**:
-- 1ブロック=1ツール。複数並列は複数ブロックを並べる
-- ツール名は以下のみ使用:
-  - web_search / html_fetch / js_exec / load_skill / parallel_think
-  - image_generate / file_upload / read_file / edit_file
-  - extract_data / summarize / memory_store / memory_recall / shorten_element
-- 引数キー名の慣例:
-  - load_skill: {"name": "SKILL-NAME"} または {"name": ["SKILL-A", "SKILL-B"]} (複数)
-  - file_upload: {"filename": "x.html", "content": "..."}
-  - read_file: {"attachment_id": "..."}
-  - web_search: {"query": "...", "max_results": 5}
-  - html_fetch: {"url": "..."}
-  - js_exec: {"code": "..."}
-  - parallel_think: {"prompt": "...", "models": ["...", "..."] (省略可)}
-  - image_generate: {"prompt": "...", "width": 1024, "height": 1024}
+- 1ブロック=1ツール、複数並列は複数ブロックを並べる
+- JSON は 1行推奨、文字列内改行は \\n でエスケープ
+- 利用可能ツール (14個):
+  - **web_search** {query, max_results}
+  - **html_fetch** {url}
+  - **js_exec** {code}
+  - **load_skill** {name: string | string[]}
+  - **parallel_think** {prompt, models: string[]}
+  - **image_generate** {prompt, width, height}
+  - **file_upload** {filename, content}
+  - **read_file** {attachment_id}
+  - **edit_file** {file_id, new_content | (find, replace)}
+  - **extract_data** {text, format: 'urls'|'numbers'|'emails'|'json'|'csv'}
+  - **summarize** {text, style: 'bullets'|'paragraph'|'tldr'}
+  - **memory_store** {key, value}
+  - **memory_recall** {key?}
+  - **shorten_element** {name?, content}
 
-═══════════════════════════════════════════════════════
-📚 利用可能な13スキル
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
+💡 判断のガイドライン (タスクに縛られない汎用性)
+═══════════════════════════════════════════════════════════════
 
-- **UI-SKILL** — 世界水準の UI/UX 設計原則
-- **CODING-SKILL** — 本番グレード実装の絶対ルール
-- **GAME-DEV-SKILL** — ゲーム作成 (オセロ/チェス等の完全仕様)
-- **WEB-RESEARCH-SKILL** — 深掘り Web リサーチ手法
-- **PARALLEL-THINK-SKILL** — 並列思考の使いこなし
-- **IMAGE-SKILL** — 画像生成プロンプト設計
-- **REFACTOR-SKILL** — リファクタリング体系
-- **DEBUG-SKILL** — 系統的デバッグ手法
-- **API-DESIGN-SKILL** — RESTful API 設計原則
-- **DATA-ANALYSIS-SKILL** — データ分析フロー
-- **SYSTEM-DESIGN-SKILL** — 大規模システム設計
-- **ALGORITHM-SKILL** — アルゴリズム実装テンプレート
-- **TESTING-SKILL** — テスト戦略
+あなたは以下のような様々なタスクを、それぞれに最適な方法で対応します:
 
-═══════════════════════════════════════════════════════
-🚀 タスク別必須フロー
-═══════════════════════════════════════════════════════
+- **雑談/挨拶** → ツール不要、そのまま日本語で答える
+- **知識質問** → 事実確認が必要なら web_search、既知なら直答
+- **意見/比較** → parallel_think で複数意見を集約
+- **リサーチ** → web_search → html_fetch → 統合
+- **計算/検証** → js_exec
+- **画像生成** → image_generate
+- **コード作成** → 規模に応じて短ければ直接返答、長ければ file_upload
+- **文章作成** → 適切なモデル (バックエンドが自動選択) で本文生成
+- **ファイル分析** → read_file → 分析ツール → 結果
+- **難問** → parallel_think で戦略 → 実行 → 検証
 
-【ゲーム/大規模アプリ作成】(オセロ・チェス・エディタ等)
-1. load_skill: ["GAME-DEV-SKILL", "CODING-SKILL", "UI-SKILL"] を並列 or 単発複数
-2. **絶対要件**: GAME-DEV-SKILL の完全仕様を全て満たすこと (オセロなら α-β枝刈り, 位置評価, 有効手表示, 難易度3段階, アニメーション等)
-3. **最低400行以上のコード**を file_upload
-4. コードが本当に動くか js_exec で主要ロジックを検証してもよい
-5. 完成報告 + [filename](/api/files/xxx) リンク + 実装機能一覧
+**過剰なツール使用は避ける**: 「こんにちは」に対して parallel_think は不要。判断は「そのツールが本当に必要か」で決める。
 
-【Web リサーチ】
-1. web_search
-2. **並列で** html_fetch × 複数 URL
-3. 引用付き日本語回答
+═══════════════════════════════════════════════════════════════
+⛔ 禁止事項
+═══════════════════════════════════════════════════════════════
 
-【比較・意見・アーキテクチャ選定】
-1. parallel_think (3モデル同時)
-2. 必要なら web_search で裏取り
-3. 統合した日本語回答
+- **虚偽の実装宣言**: file_upload を呼ばずに「作りました」と言い、架空リンクを出す
+- **推測での回答**: 事実確認できることを推測で答える
+- **スキルの露出**: load_skill の内容をユーザーへの返答に貼る
+- **タスク特化の思い込み**: 「オセロを作って」と言われた時に、ツールがオセロ専用に振る舞う（ゲーム用のスキルは汎用的な "GAME特有の技法" ではなく "アルゴリズム" として存在する）
+- **英語の混入**: 日本語での応答を維持
 
-【添付ファイル分析】
-1. read_file
-2. 必要なら js_exec / extract_data / summarize
-3. 分析結果を日本語で
+═══════════════════════════════════════════════════════════════
+✨ 最終回答のスタイル
+═══════════════════════════════════════════════════════════════
 
-═══════════════════════════════════════════════════════
-⛔ 絶対禁止事項
-═══════════════════════════════════════════════════════
-
-- **手抜きゲーム/アプリ**: オセロで「盤面と黒白の駒を並べるだけ」で終わる → 犯罪レベル。GAME-DEV-SKILL の全要件を実装せよ
-- **タスクブロックだけで会話終了**: ツール結果を受けたら必ず次のアクションへ
-- **スキル内容の露出**: load_skill 結果をユーザー返答に貼らない
-- **推測での回答**: 事実確認できるなら web_search か js_exec で確認
-- **単一モデル独断**: 難問なら parallel_think を必ず使う
-- **英語の混入**: 全応答日本語で
-
-═══════════════════════════════════════════════════════
-✨ 最終回答スタイル
-═══════════════════════════════════════════════════════
-
-- 日本語のみ、簡潔かつ本質的
-- 生成物は [filename](/api/files/xxx) 形式でリンク
-- コードは長ければ file_upload、短ければ \`\`\`言語 フェンス
-- Web リサーチはソース URL を必ず引用
-- **手抜き感 = 犯罪**${attachSection}`;
+- ツール使用が終わったら \`\`\`tool\`\`\` ブロック無しの日本語で回答
+- 前置き最小限、本質から入る
+- 生成物リンクは [filename](/api/files/xxx) 形式
+- Web リサーチは必ずソース URL 引用
+- 見た目より内容を重視するが、Markdown で構造化 (見出し・箇条書き・表)${attachSection}`;
 }
 
 // ============================================================================
-// SSE + Robust tool-call parser
+// SSE + Forgiving parser
 // ============================================================================
 function sseSend(res, event, data) {
   try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (_) {}
 }
 
-/**
- * Forgiving tool-call parser.
- * Handles:
- *  - Standard: ```tool\n{"tool":"x","args":{...}}\n```
- *  - Without fence: {"tool":"x","args":{...}} on its own line
- *  - Wrong key: {"name":"x", "args":{...}} → treat as tool name
- *  - Wrong key: {"tool":"x", "parameters":{...}} → use as args
- *  - Alias: {"tool":"search","args":...} → maps to web_search
- *  - Malformed JSON: try to extract balanced {...}
- *  - Wrapped: ```json\n{...}\n``` if it contains "tool" key
- *  - Skill names in args like {"skill_ids":[...]} → normalized to {name:[...]}
- */
 function parseToolCalls(text) {
   const calls = [];
   const found = new Set();
 
-  const addCall = (raw, tool, args) => {
+  const addCall = (tool, args) => {
     tool = String(tool || "").toLowerCase().replace(/[_\s]+/g, "_");
-    // Resolve alias
     if (TOOL_ALIASES[tool]) tool = TOOL_ALIASES[tool];
     if (!TOOLS[tool]) return false;
-    // Fingerprint to dedupe
     const fp = tool + JSON.stringify(args || {});
     if (found.has(fp)) return true;
     found.add(fp);
@@ -1012,37 +921,20 @@ function parseToolCalls(text) {
   };
 
   const tryParseObj = (raw) => {
-    // Attempt strict parse
     try { return JSON.parse(raw); } catch (_) {}
-    // Extract first balanced { ... }
     const jm = raw.match(/\{[\s\S]*\}/);
     if (jm) { try { return JSON.parse(jm[0]); } catch (_) {} }
-    // Try to sanitize common issues: single quotes, trailing commas
-    let cleaned = raw
-      .replace(/'/g, '"')
-      .replace(/,(\s*[}\]])/g, "$1")
-      .replace(/(\w+):/g, '"$1":')  // Bare keys → quoted
-      .replace(/""(\w+)""/g, '"$1"'); // Undo double-quoting we might have introduced
-    try { return JSON.parse(cleaned); } catch (_) {}
-    const jm2 = cleaned.match(/\{[\s\S]*\}/);
-    if (jm2) { try { return JSON.parse(jm2[0]); } catch (_) {} }
     return null;
   };
 
   const extractFromParsed = (obj) => {
     if (!obj || typeof obj !== "object") return null;
-    // Standard shape: {tool, args}
     let tool = obj.tool || obj.name || obj.tool_name || obj.function || obj.action;
     let args = obj.args || obj.arguments || obj.parameters || obj.params || obj.input || obj;
-    // If args is just the outer obj minus tool key, that's fine
-    if (args === obj) {
-      const { tool: _t, name: _n, ...rest } = obj;
-      args = rest;
-    }
+    if (args === obj) { const { tool: _t, name: _n, ...rest } = obj; args = rest; }
     return { tool, args };
   };
 
-  // 1. Standard ```tool ... ``` blocks
   const fenceRe = /```(?:tool|json)?\s*\n?([\s\S]*?)\n?```/g;
   let m;
   while ((m = fenceRe.exec(text))) {
@@ -1051,18 +943,14 @@ function parseToolCalls(text) {
     const obj = tryParseObj(raw);
     if (!obj) continue;
     const extracted = extractFromParsed(obj);
-    if (extracted && extracted.tool) addCall(raw, extracted.tool, extracted.args);
+    if (extracted && extracted.tool) addCall(extracted.tool, extracted.args);
   }
 
-  // 2. Standalone JSON objects with "tool"/"name"/"action" key
-  //    Use a state machine to find balanced { ... } starting with these keys
   const startRe = /\{\s*"(?:tool|name|action)"\s*:/g;
   let sm;
   while ((sm = startRe.exec(text))) {
-    // Skip if inside a code fence we already handled
     const before = text.slice(Math.max(0, sm.index - 20), sm.index);
     if (before.endsWith("```tool\n") || before.endsWith("```json\n")) continue;
-    // Find the matching closing brace by balanced counting
     let depth = 0, end = -1, inString = false, escape = false;
     for (let i = sm.index; i < text.length; i++) {
       const ch = text[i];
@@ -1078,15 +966,13 @@ function parseToolCalls(text) {
     const obj = tryParseObj(raw);
     if (!obj) continue;
     const extracted = extractFromParsed(obj);
-    if (extracted && extracted.tool) addCall(raw, extracted.tool, extracted.args);
+    if (extracted && extracted.tool) addCall(extracted.tool, extracted.args);
   }
-
   return calls;
 }
 
 function stripToolBlocks(text) {
   let s = text.replace(/```(?:tool|json)\s*[\s\S]*?```/g, "");
-  // Also strip standalone tool JSON objects (balanced brace matching)
   const startRe = /\{\s*"(?:tool|name|action)"\s*:/g;
   const removeRanges = [];
   let sm;
@@ -1103,13 +989,53 @@ function stripToolBlocks(text) {
     }
     if (end > 0) removeRanges.push([sm.index, end + 1]);
   }
-  // Remove from back to front to keep indices valid
   for (const [a, b] of removeRanges.reverse()) s = s.slice(0, a) + s.slice(b);
   return s.trim();
 }
 
 // ============================================================================
-// File / attachment endpoints
+// Task complexity classifier & model routing
+// ============================================================================
+function classifyTask(userMessage, conversationContext) {
+  const msg = String(userMessage || "");
+  const ctx = String(conversationContext || "");
+
+  // 0. Trivial / greetings / very short → chat (fast model, no over-engineering)
+  if (msg.trim().length < 15 && !/(?:作って|make|build|create|write|implement|実装|書いて|分析)/i.test(msg)) {
+    return "chat";
+  }
+
+  // 1. Research / info-seeking → keep default (fast) model
+  // These words indicate the user wants information, not code
+  const infoSeeking = /(?:について|とは|教えて|何|なに|どう|なぜ|いつ|誰|最新|最近|ニュース|情報|調べて|検索|what is|tell me|latest|news|explain)/i;
+  if (infoSeeking.test(msg) && !/(?:作って|実装|書いて|コード|生成して|make|build|write|create.*(?:code|app|html))/i.test(msg)) {
+    return "chat"; // Research handled with default model + tool chain
+  }
+
+  // 2. Large code generation — must be explicit "make/build/write"
+  // "作って" alone doesn't qualify; must combine with an artifact keyword
+  const codeCreateVerbs = /(?:作って|作成して|実装して|書いて|生成して|コード化|make|build|create|write|implement|generate)/i;
+  const codeArtifacts = /(?:アプリ|サイト|ページ|ゲーム|ツール|エディタ|エディター|ダッシュボード|コード|html|css|javascript|プログラム|スクリプト|component|app|website|tool|game|editor|dashboard|program|script)/i;
+  if (codeCreateVerbs.test(msg) && codeArtifacts.test(msg)) return "code_large";
+  if (/index\.html|単体で|single.*file|full.*app/i.test(msg)) return "code_large";
+
+  // 3. Reasoning / comparison
+  if (/(?:比較|どちらが|どれが|選定|意思決定|判断|vs\.?|versus|choose.*between)/i.test(msg)) return "reasoning";
+
+  // 4. Analysis (depth requested)
+  if (/(?:分析|解析|徹底的|comprehensive|analyze in depth|deep.*analysis)/i.test(msg)) return "analysis";
+
+  // 5. Summary
+  if (/(?:要約|まとめて|tldr|3行で|一行で|summarize)/i.test(msg)) return "summary";
+
+  // Context signals — if we've already loaded coding skills and asked for file_upload
+  if (/CODING-SKILL|GAME-DEV-SKILL|SYSTEM-DESIGN-SKILL/i.test(ctx) && /file_upload/i.test(ctx)) return "code_large";
+
+  return "chat";
+}
+
+// ============================================================================
+// User upload endpoints
 // ============================================================================
 app.post("/api/upload", (req, res) => {
   const { filename, content, mime } = req.body || {};
@@ -1129,11 +1055,8 @@ app.post("/api/upload", (req, res) => {
 app.delete("/api/upload/:id", (req, res) => { ATTACHMENTS.delete(req.params.id); res.json({ ok: true }); });
 
 // ============================================================================
-// /api/agent
+// /api/agent — the main endpoint
 // ============================================================================
-// Models that support long outputs (>15KB) - used for large code generation
-const LARGE_OUTPUT_MODELS = ["felo-chat", "scira-nemotron-3-super", "gpt-4o"];
-
 app.post("/api/agent", async (req, res) => {
   const { messages = [], model = DEFAULT_MODEL, max_rounds = 12, attachments = [] } = req.body || {};
 
@@ -1170,11 +1093,12 @@ ${sysText}
 ${originalFirst}
 ─── ここまで ───
 
-[Orby として日本語で応答。ツール実行が必要なら \`\`\`tool\`\`\` ブロックで呼び出す。積極的に自律連鎖してください。手抜きは絶対禁止。]`
+[Orby として日本語で応答。タスクの複雑度に応じて適切にツールを使い分ける。単純な質問なら直接答え、複雑なタスクなら parallel_think で戦略を立ててから実行。]`
     };
   }
 
   const convo = [sys, ...userMsgs];
+  const originalUserMsg = messages[messages.length - 1]?.content || "";
   let finalEmitted = false;
 
   try {
@@ -1182,21 +1106,25 @@ ${originalFirst}
       if (isClosed()) break;
       sseSend(res, "round", { round });
 
-      let assistantText = "";
-      sseSend(res, "assistant_start", { round });
+      // Classify task and route model
+      const contextSoFar = convo.slice(-4).map(m => typeof m.content === "string" ? m.content : "").join("\n");
+      const category = classifyTask(originalUserMsg, contextSoFar);
 
-      // Detect if we need a large-output model this round.
-      // Trigger: previous tool result contains a load_skill for CODING/GAME/UI/ALGORITHM
-      // OR the user message asks to "make/create/build/implement/write" something substantial.
-      const lastToolResults = convo.slice(-3).filter(m => typeof m.content === "string" && m.content.includes("```tool_result")).join("");
-      const needsLargeOutput =
-        /GAME-DEV-SKILL|CODING-SKILL|ALGORITHM-SKILL|SYSTEM-DESIGN-SKILL/i.test(lastToolResults) ||
-        /作って|作って|実装|作成|書いて|コードを生成|make it|build|implement|create.*app/i.test(
-          messages[messages.length - 1]?.content || ""
-        );
-      const effectiveModel = needsLargeOutput && !LARGE_OUTPUT_MODELS.includes(model)
-        ? "felo-chat"  // switch to felo-chat which supports up to 21KB output
-        : model;
+      // Model selection strategy:
+      // - code_large / analysis: always route to specialized model (even round 1) because
+      //   default model can't output enough bytes for these tasks
+      // - Other categories on round 1: respect user's model choice
+      // - Round 2+: route by category dynamically
+      let effectiveModel;
+      if (category === "code_large" || category === "analysis") {
+        effectiveModel = pickModelFor(category);
+      } else if (round === 1) {
+        effectiveModel = model;
+      } else {
+        effectiveModel = pickModelFor(category);
+      }
+
+      sseSend(res, "assistant_start", { round, model_used: effectiveModel, category });
 
       let streamedText = "";
       try {
@@ -1206,21 +1134,20 @@ ${originalFirst}
         );
       } catch (_) {}
 
+      // Detect problems
       const knownToolNames = new Set([...Object.keys(TOOLS), ...Object.keys(TOOL_ALIASES)]);
       const toolNameMatches = [...streamedText.matchAll(/```(?:tool|json)?\s*\n?\s*\{\s*"(?:tool|name|action)"\s*:\s*"([^"]+)"/g)].map(m => m[1].toLowerCase());
       const hasInvalidToolName = toolNameMatches.length > 0 && toolNameMatches.every(n => !knownToolNames.has(n));
       const looksTruncated =
-        !streamedText ||
-        !streamedText.trim() ||
+        !streamedText || !streamedText.trim() ||
         (streamedText.match(/```tool/g) || []).length > (streamedText.match(/```tool[\s\S]*?```/g) || []).length ||
-        streamedText.trim().endsWith('{"tool":"skill') ||
         hasInvalidToolName;
 
+      let assistantText = streamedText;
       if (looksTruncated) {
         const escalationChain = hasInvalidToolName
-          ? ["felo-chat", "gpt-4o", "scira-nemotron-3-super", "gpt-4"]
+          ? ["felo-chat", "gpt-4o", "scira-nemotron-3-super"]
           : [effectiveModel, "felo-chat", "scira-nemotron-3-super"];
-        let replaced = false;
         for (const alt of escalationChain) {
           try {
             const j = await nieChat({ model: alt, messages: convo, temperature: 0.6 });
@@ -1232,14 +1159,10 @@ ${originalFirst}
               sseSend(res, "assistant_reset", {});
               sseSend(res, "assistant_delta", { text: full });
               assistantText = full;
-              replaced = true;
               break;
             }
           } catch (_) {}
         }
-        if (!replaced) assistantText = streamedText;
-      } else {
-        assistantText = streamedText;
       }
 
       sseSend(res, "assistant_end", { round });
@@ -1248,32 +1171,21 @@ ${originalFirst}
       convo.push({ role: "assistant", content: assistantText || " " });
 
       if (calls.length === 0) {
-        // Detect fabricated file links (agent claims to have created a file but didn't call file_upload)
+        // Detect hallucinated file links
         const finalText = stripToolBlocks(assistantText);
         const claimsFile = /\/api\/files\/[a-zA-Z0-9_.-]+/.test(finalText);
-        const hasRealUpload = /\/api\/files\/[a-f0-9]{16}/.test(finalText); // real IDs are 16 hex
         const realIds = new Set([...UPLOADED_FILES.keys()]);
         const referencedRealIds = [...finalText.matchAll(/\/api\/files\/([a-f0-9]{16})/g)].map(m => m[1]);
         const allRealRefs = referencedRealIds.length > 0 && referencedRealIds.every(id => realIds.has(id));
 
         if (claimsFile && !allRealRefs) {
-          // Agent hallucinated a file link. Force re-attempt.
           sseSend(res, "assistant_reset", {});
           sseSend(res, "assistant_delta", { text: "[修正中: 実際にファイルを作成します...]" });
           convo.push({
             role: "user",
-            content: `あなたの回答に架空のファイルリンクが含まれています。file_upload ツールを使っていないのにリンクを提示しています。
-
-**今すぐ**:
-1. 必ず file_upload ツールを呼び出してファイルを本当に作成してください:
-
-\`\`\`tool
-{"tool":"file_upload","args":{"filename":"...","content":"...(実際のコード全体)..."}}
-\`\`\`
-
-2. ツール呼び出しの結果から得た本物の URL (例: /api/files/xxxxxxxxxxxxxxxx) を提示してください。架空の ID ではなく。`
+            content: `架空のファイルリンクが含まれています。file_upload ツールを実際に呼び出してファイルを作成してください:\n\n\`\`\`tool\n{"tool":"file_upload","args":{"filename":"...","content":"...(実コード)..."}}\n\`\`\`\n\nツール結果から得た本物の URL のみ使用してください。`
           });
-          continue; // Skip final emission, continue loop
+          continue;
         }
 
         sseSend(res, "final", { text: finalText });
@@ -1307,41 +1219,36 @@ ${originalFirst}
         return "```tool_result\ntool: " + r.tool + "\nargs: " + JSON.stringify(r.args) + "\nresult:\n" + resStr + "\n```";
       }).join("\n\n");
 
+      // Determine next step nudge based on tool results
       const used = new Set(results.map(r => r.tool));
       let nudge = "";
+
       if (used.has("web_search") && !used.has("html_fetch")) {
         const sr = results.find(r => r.tool === "web_search")?.result;
         const urls = (sr?.results || []).slice(0, 3).map(r => r.url);
         nudge = `
 
-[自律連鎖] 検索結果を受け取りました。深く答えるため、次のラウンドで必ず上位1-3件のURLを html_fetch で並列取得してください。
+[次のステップ] 検索結果から重要な URL を並列で html_fetch すると回答が深くなります。同一ラウンドで複数の \`\`\`tool\`\`\` ブロックを並べれば並列実行されます。
 
 URL 候補:
 ${urls.map((u, i) => `${i+1}. ${u}`).join("\n")}
 
-同ラウンドで複数の \`\`\`tool\`\`\` ブロックを並べれば並列実行されます。`;
-      } else if (used.has("load_skill") && !used.has("file_upload") && !used.has("web_search") && !used.has("html_fetch") && !used.has("parallel_think")) {
+ただし、検索スニペットで既に十分な情報があるなら html_fetch をスキップして最終回答へ。`;
+      } else if (used.has("parallel_think") && !used.has("file_upload") && !used.has("web_search")) {
         nudge = `
 
-[重要｜絶対遵守] スキルを読み込みました。**今すぐ次の行動を取れ**:
+[次のステップ] 複数モデルの意見を得ました。これらを統合してタスクを実行してください:
+- コード生成なら file_upload
+- 情報が足りなければ web_search
+- 十分なら最終回答を日本語で`;
+      } else if (used.has("load_skill") && !used.has("file_upload") && !used.has("parallel_think")) {
+        nudge = `
 
-1. スキルの全要件を満たすコードを生成し、**必ず file_upload ツールを実際に呼び出す**（回答でなく、ツール呼び出しで）：
-
-\`\`\`tool
-{"tool":"file_upload","args":{"filename":"xxx.html","content":"<!DOCTYPE html>...（実際のHTMLコード全体）..."}}
-\`\`\`
-
-2. **絶対禁止**: 「実装しました」と書いて file_upload を呼ばないこと。架空のリンク (例: [othello.html](/api/files/xxx)) を輔送してはいけない。リンクは file_upload ツールの結果からしか得られない。
-
-3. GAME-DEV-SKILL を読んだなら、オセロであれば α-β枝刈り + 3段階難易度 + 位置評価 + 騒返しアニメ + 有効手ハイライト + リセットを全て実装すること。**最低400行**。
-
-今すぐのラウンドで実行してください。`;
+[次のステップ] スキル内容を参考にタスクを実行してください。コード生成なら file_upload を呼び出し、実際にファイルを作成する。スキル内容自体はユーザーに露出しないで。`;
       } else {
         nudge = `
 
-[次のアクション] タスクが完了したか判断:
-- 未完了 → 次のツールを呼び出して継続
-- 完了 → ツールブロックなしで日本語の最終回答を出す`;
+[次のステップ] タスクが完了したなら日本語で最終回答を。まだ必要な作業があるなら次のツールを呼び出す。`;
       }
 
       convo.push({ role: "user", content: feedback + nudge });
@@ -1349,8 +1256,8 @@ ${urls.map((u, i) => `${i+1}. ${u}`).join("\n")}
       if (round === max_rounds && !finalEmitted) {
         sseSend(res, "round", { round: round + 1, forced: true });
         try {
-          convo.push({ role: "user", content: "[最大ラウンド到達。最終回答を日本語で出してください。]" });
-          const j = await nieChat({ model, messages: convo, temperature: 0.4 });
+          convo.push({ role: "user", content: "[最大ラウンド到達。最終回答を日本語で。]" });
+          const j = await nieChat({ model: pickModelFor("chat"), messages: convo, temperature: 0.4 });
           const finalText = stripToolBlocks(j.content || j.choices?.[0]?.message?.content || "");
           sseSend(res, "assistant_start", { round: round + 1 });
           sseSend(res, "assistant_delta", { text: finalText });
@@ -1370,7 +1277,7 @@ ${urls.map((u, i) => `${i+1}. ${u}`).join("\n")}
 });
 
 // ============================================================================
-// Other endpoints
+// Endpoints
 // ============================================================================
 app.get("/api/upstream-models", async (_req, res) => {
   try {
@@ -1385,7 +1292,6 @@ app.get("/api/upstream-models", async (_req, res) => {
     res.json({ models });
   } catch (e) { res.status(502).json({ error: String(e.message || e), models: [] }); }
 });
-
 app.get("/api/files/:id", (req, res) => {
   const f = UPLOADED_FILES.get(req.params.id);
   if (!f) return res.status(404).send("not found");
@@ -1393,25 +1299,22 @@ app.get("/api/files/:id", (req, res) => {
   res.setHeader("Content-Disposition", `${req.query.inline ? "inline" : "attachment"}; filename="${f.name}"`);
   res.send(f.content);
 });
-
 app.get("/api/files/:id/raw", (req, res) => {
   const f = UPLOADED_FILES.get(req.params.id);
   if (!f) return res.status(404).json({ error: "not found" });
   res.json({ id: req.params.id, filename: f.name, content: f.content, mime: f.mime });
 });
-
 app.get("/api/health", (_req, res) => {
   res.json({
-    ok: true, service: "orby", version: "5.0.0",
+    ok: true, service: "orby", version: "6.0.0",
     default_model: DEFAULT_MODEL,
-    tools: Object.keys(TOOLS),
-    skills: Object.keys(SKILLS),
+    tools: Object.keys(TOOLS), skills: Object.keys(SKILLS),
+    model_profiles: MODEL_PROFILE,
   });
 });
 
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Orby v5 running on http://localhost:${PORT}`));
+  app.listen(PORT, () => console.log(`Orby v6 running on http://localhost:${PORT}`));
 }
-
 module.exports = app;
