@@ -1437,7 +1437,20 @@ async function send(){
         updateStatus(statusPill, `round ${data.round} · reasoning…`);
         if(data.round > 1 && currentBubble) finalizeBubble();
       }
-      else if(event==="assistant_start"){ ensureBubble(); }
+      else if(event==="assistant_start"){
+        ensureBubble();
+        if(data.model_used && currentMsg){
+          // Insert small model badge above role label (once per bubble)
+          const roleEl = currentMsg.querySelector(".role");
+          if(roleEl && !currentMsg.querySelector(".model-badge")){
+            const badge = document.createElement("span");
+            badge.className = "model-badge";
+            badge.style.cssText = "font-size:10px;color:var(--text-4);font-family:var(--mono);margin-left:8px;letter-spacing:.02em;text-transform:none;font-weight:500";
+            badge.innerHTML = `· ${escapeHtml(data.model_used)}` + (data.category && data.category !== "chat" ? ` · <span style="color:var(--accent)">${escapeHtml(data.category)}</span>` : "");
+            roleEl.appendChild(badge);
+          }
+        }
+      }
       else if(event==="assistant_reset"){
         assistantRawBuffer = "";
         if(currentBubble) currentBubble.innerHTML = "";
