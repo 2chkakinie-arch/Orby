@@ -730,6 +730,11 @@ const ICONS = {
   image_generate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>',
   file_upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
   read_file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>',
+  edit_file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  extract_data: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v18H3z"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>',
+  summarize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  memory_store: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>',
+  memory_recall: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .55 4"/><polyline points="3 4 3 10 9 10"/></svg>',
   shorten_element: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h16"/></svg>',
 };
 
@@ -1089,11 +1094,16 @@ function toolSummary(tool, args){
     case "web_search":     return args.query ? `"${args.query}"` : "";
     case "html_fetch":     return args.url ? args.url.replace(/^https?:\/\/(www\.)?/,"") : "";
     case "js_exec":        return (args.code||"").slice(0,60).replace(/\n/g," ");
-    case "load_skill":     return args.name || "";
+    case "load_skill":     return Array.isArray(args.name) ? args.name.join(", ") : (args.name || args.skill || "");
     case "parallel_think": return (args.prompt||"").slice(0,60).replace(/\n/g," ");
     case "image_generate": return (args.prompt||"").slice(0,60).replace(/\n/g," ");
     case "file_upload":    return args.filename || "";
-    case "read_file":      return args.attachment_id || "";
+    case "read_file":      return args.attachment_id || args.id || "";
+    case "edit_file":      return args.file_id || "";
+    case "extract_data":   return args.format || "";
+    case "summarize":      return (args.style || "bullets") + " · " + (args.text||"").slice(0,40).replace(/\n/g," ");
+    case "memory_store":   return args.key || "";
+    case "memory_recall":  return args.key || "(all keys)";
     case "shorten_element":return args.name || (args.content||"").slice(0,40);
     default:               return "";
   }
@@ -1104,11 +1114,16 @@ function toolSummaryDone(tool, result){
     case "web_search":     return result.results ? `${result.results.length} results · ${result.source}` : "no results";
     case "html_fetch":     return result.title ? `"${result.title.slice(0,60)}" · ${result.length||0} chars` : `${result.length||0} chars`;
     case "js_exec":        return result.ok ? `→ ${String(result.result||"").slice(0,50)}` : "error";
-    case "load_skill":     return result.ok ? `${result.name} loaded` : "not found";
+    case "load_skill":     return result.ok ? (result.loaded_count > 1 ? `${result.loaded_count} skills loaded` : `${result.skills?.[0]?.name || result.name} loaded`) : "not found";
     case "parallel_think": return result.answers ? `${result.answers.length} models responded` : "";
     case "image_generate": return "image generated";
-    case "file_upload":    return `${result.filename} · ${((result.size||0)/1024).toFixed(1)}KB`;
+    case "file_upload":    return `${result.filename} · ${((result.size||0)/1024).toFixed(1)}KB · ${result.lines || 0} lines`;
     case "read_file":      return result.ok ? `"${result.filename}" · ${result.returned_chars} chars` : "not found";
+    case "edit_file":      return result.ok ? `${result.filename} · ${result.new_size}B` : "error";
+    case "extract_data":   return `${result.count} ${result.format}`;
+    case "summarize":      return result.ok ? `${result.style} summary` : "error";
+    case "memory_store":   return result.ok ? `stored: ${result.key}` : "error";
+    case "memory_recall":  return result.ok ? (result.keys ? `${result.keys.length} keys` : `"${(result.value||"").slice(0,40)}"`) : "not found";
     case "shorten_element":return `${result.id} · ${result.length} chars`;
     default:               return "ok";
   }
@@ -1199,9 +1214,13 @@ function openToolModal(run){
     if(r.error) html += `<div class="modal-section-label" style="margin-top:12px;color:var(--danger)">error</div><pre style="color:var(--danger)">${escapeHtml(String(r.error))}</pre>`;
     resEl.innerHTML = html || `<pre>${escapeHtml(JSON.stringify(r,null,2))}</pre>`;
   } else if(run.tool === "load_skill"){
-    resEl.innerHTML = r.ok
-      ? `<div class="modal-section-label">skill: ${escapeHtml(r.name)}</div><pre>${escapeHtml(r.content||"")}</pre>`
-      : `<div class="modal-section-label" style="color:var(--danger)">not found</div><pre>${escapeHtml(JSON.stringify(r,null,2))}</pre>`;
+    if(r.ok){
+      const skills = r.skills || (r.name ? [{name: r.name, content: r.content}] : []);
+      resEl.innerHTML = skills.map(sk => `<div class="modal-section-label">skill: ${escapeHtml(sk.name)}</div><pre>${escapeHtml(sk.content||"")}</pre>`).join("") ||
+                        `<div class="modal-section-label">loaded</div><pre>${escapeHtml(JSON.stringify(r,null,2))}</pre>`;
+    } else {
+      resEl.innerHTML = `<div class="modal-section-label" style="color:var(--danger)">not found</div><pre>${escapeHtml(JSON.stringify(r,null,2))}</pre>`;
+    }
   } else if(run.tool === "parallel_think" && Array.isArray(r.answers)){
     const items = r.answers.map(a=>`
       <div class="parallel-answer">
