@@ -1,5 +1,9 @@
 // ============================================================================
-// Orby v2 — Autonomous Coding Agent Backend
+// Orby v3 — Autonomous Coding Agent Backend
+// - Default model: scira-default
+// - Aggressive autonomy: chained web_search → html_fetch, parallel_think usage
+// - Compact tool cards (no raw JSON exposure in chat)
+// - Bing RSS search (reliable) + Wikipedia fallback
 // ============================================================================
 
 const express = require("express");
@@ -20,53 +24,52 @@ const SHORTCUTS = new Map();
 const UPLOADED_FILES = new Map();
 
 // ============================================================================
-// Built-in Skills
+// Skills
 // ============================================================================
 const SKILLS = {
-  "UI-SKILL": `# UI/UX Design Skill
-- Dark theme, monochrome (black/white/gray) foundation.
-- Typography: system-font stack, tight tracking on headings.
-- 8px spacing grid. 150ms cubic-bezier(.4,0,.2,1) transitions.
-- Borders: 1px rgba(255,255,255,.08). Rounded 10-14px.
-- One accent color max. Avoid rainbow palettes.
-- Prefer CSS grid/flex. Focus states must be visible.`,
+  "UI-SKILL": `# UI/UX Skill
+- Dark theme, monochrome (black/white/gray). One accent color max.
+- Typography: system fonts, tight tracking on headings, generous line-height.
+- 8px grid. 150ms cubic-bezier(.4,0,.2,1) transitions.
+- Borders 1px rgba(255,255,255,.08). Rounded 10-14px.
+- Visible focus states. CSS grid/flex over positioning tricks.
+- Micro-interactions on hover/active. Never cramped.`,
 
   "CODING-SKILL": `# Coding Skill
-- Production-grade code. Handle edge cases.
+- Production-grade. Handle edge cases + errors.
 - Modern JS ES2022+ / Python 3.11+ with type hints.
 - Self-documenting names. Comment WHY not WHAT.
-- Deliver full apps in one go: entry file + config + assets.
-- After writing code, mentally trace and check for bugs.
+- Full apps in one go: entry + config + assets.
+- After writing, mentally trace + check for bugs.
 - Use js_exec to verify small pieces when unsure.
-- For single-file HTML apps: inline CSS+JS, no external CDN dependencies unless required.`,
+- Single-file HTML: inline CSS+JS, zero CDN unless required.`,
 
   "WEB-RESEARCH-SKILL": `# Web Research Skill
-- web_search → pick 1-3 authoritative URLs → html_fetch each.
-- Cross-reference at least 2 sources. Cite URLs in final answer.`,
+- web_search → pick 1-3 authoritative URLs → html_fetch each in the SAME round (parallel).
+- Cross-reference 2+ sources. Cite URLs in final answer.
+- If snippets are enough for the question, skip html_fetch.
+- For time-sensitive queries, include the year in the search.`,
 
   "PARALLEL-THINK-SKILL": `# Parallel Thinking Skill
-- Use parallel_think for hard/ambiguous problems.
-- Merge strongest points from each model. Don't blindly average.`,
+- For hard/ambiguous problems: architecture, algorithm choice, subjective judgment.
+- Use parallel_think to consult scira-nemotron-3-super + gpt-4 + deepseek-r1.
+- Merge strongest points. Don't blindly average — pick the sharpest reasoning.`,
 
   "IMAGE-SKILL": `# Image Skill
 - image_generate returns a Pollinations URL. Embed as markdown ![](url).
 - Good prompts: subject + style + lighting + composition + camera detail.`,
 
-  "GAME-DEV-SKILL": `# Game Development Skill (Single-File HTML)
-- Canvas 2D or DOM based. 60fps target.
-- Game loop: requestAnimationFrame with delta-time.
+  "GAME-DEV-SKILL": `# Game Dev Skill (Single-File HTML)
+- Canvas 2D or DOM. 60fps target. requestAnimationFrame + delta-time.
 - Separate state / update / render clearly.
 - Input: keyboard + click + touch.
-- For board games (Othello/Chess): 
-  * Board as 2D array. Move validation function.
-  * AI: minimax with alpha-beta pruning for small boards. Iterative deepening.
-  * Evaluation: material + positional + mobility.
-- UI: score display, restart, difficulty toggle.
+- Board games (Othello/Chess): 2D array board, move validator, minimax + alpha-beta, evaluation (material + positional + mobility).
+- UI: score, restart, difficulty toggle.
 - Zero external dependencies. Fully offline.`,
 };
 
 // ============================================================================
-// Upstream helpers
+// Upstream (nie-ai) helpers
 // ============================================================================
 async function nieChat({ model, messages, temperature = 0.7 }) {
   const r = await fetch(`${NIE_BASE}/chat`, {
@@ -81,18 +84,15 @@ async function nieChat({ model, messages, temperature = 0.7 }) {
   return r.json();
 }
 
-async function nieChatStream({ model, messages, temperature = 0.7 }, onDelta, signal) {
+async function nieChatStream({ model, messages, temperature = 0.7 }, onDelta) {
   const r = await fetch(`${NIE_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, messages, temperature, stream: true }),
-    signal,
   });
   if (!r.ok || !r.body) throw new Error(`nieChatStream ${r.status}`);
-  const reader = r.body;
-  let buf = "";
-  let full = "";
-  for await (const chunk of reader) {
+  let buf = "", full = "";
+  for await (const chunk of r.body) {
     buf += chunk.toString("utf8");
     let nl;
     while ((nl = buf.indexOf("\n")) >= 0) {
@@ -104,10 +104,7 @@ async function nieChatStream({ model, messages, temperature = 0.7 }, onDelta, si
       try {
         const j = JSON.parse(data);
         const delta = j.choices?.[0]?.delta?.content || "";
-        if (delta) {
-          full += delta;
-          onDelta && onDelta(delta);
-        }
+        if (delta) { full += delta; onDelta && onDelta(delta); }
       } catch (_) {}
     }
   }
@@ -115,22 +112,8 @@ async function nieChatStream({ model, messages, temperature = 0.7 }, onDelta, si
 }
 
 // ============================================================================
-// Tool: web_search — robust multi-source with Bing (u= redirect decode) + fallbacks
+// Tool: web_search — Bing RSS (reliable) + Wikipedia fallback
 // ============================================================================
-function decodeBingRedirect(url) {
-  try {
-    const m = url.match(/[?&]u=([^&]+)/);
-    if (!m) return url;
-    let payload = decodeURIComponent(m[1]);
-    if (payload.startsWith("a1")) payload = payload.slice(2);
-    // urlsafe base64 → base64
-    payload = payload.replace(/-/g, "+").replace(/_/g, "/");
-    while (payload.length % 4) payload += "=";
-    const decoded = Buffer.from(payload, "base64").toString("utf8");
-    return decoded.startsWith("http") ? decoded : url;
-  } catch { return url; }
-}
-
 function decodeXmlEntities(s) {
   return String(s)
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -139,14 +122,13 @@ function decodeXmlEntities(s) {
     .replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n));
 }
 
-// Bing search via RSS endpoint - reliable, no bot detection, structured XML
 async function searchBing(query, max_results) {
   const url = `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}&count=${Math.max(max_results, 10)}`;
   const r = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
       "Accept": "application/rss+xml, application/xml, text/xml, */*",
-      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
     },
   });
   if (!r.ok) throw new Error(`bing rss ${r.status}`);
@@ -161,8 +143,7 @@ async function searchBing(query, max_results) {
     const d = it.match(/<description>([\s\S]*?)<\/description>/);
     if (!t || !l) continue;
     const url = decodeXmlEntities(l[1]).trim();
-    if (!/^https?:\/\//.test(url)) continue;
-    if (seen.has(url)) continue;
+    if (!/^https?:\/\//.test(url) || seen.has(url)) continue;
     seen.add(url);
     results.push({
       title: decodeXmlEntities(t[1]).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
@@ -173,28 +154,28 @@ async function searchBing(query, max_results) {
   return results;
 }
 
-async function searchWikipedia(query, max_results) {
-  const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=${max_results}&utf8=1`;
-  const r = await fetch(url, { headers: { "User-Agent": "Orby/1.0" } });
+async function searchWikipedia(query, max_results, lang = "en") {
+  const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=${max_results}&utf8=1`;
+  const r = await fetch(url, { headers: { "User-Agent": "Orby/3.0" } });
   const j = await r.json();
   return (j.query?.search || []).map(s => ({
     title: s.title,
-    url: `https://en.wikipedia.org/wiki/${encodeURIComponent(s.title.replace(/ /g, "_"))}`,
+    url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(s.title.replace(/ /g, "_"))}`,
     snippet: s.snippet.replace(/<[^>]+>/g, "").replace(/&quot;/g, '"'),
   }));
 }
 
-async function tool_web_search({ query, max_results = 8 }) {
+async function tool_web_search({ query, max_results = 6 }) {
   const errors = [];
   try {
     const bing = await searchBing(query, max_results);
     if (bing.length > 0) return { query, source: "bing", results: bing };
     errors.push("bing: 0 results");
   } catch (e) { errors.push(`bing: ${e.message}`); }
-  // Fallback: Wikipedia (always works)
   try {
-    const wiki = await searchWikipedia(query, max_results);
-    if (wiki.length > 0) return { query, source: "wikipedia", results: wiki, note: "Bing failed; using Wikipedia" };
+    const isJa = /[\u3040-\u30ff\u4e00-\u9fff]/.test(query);
+    const wiki = await searchWikipedia(query, max_results, isJa ? "ja" : "en");
+    if (wiki.length > 0) return { query, source: "wikipedia", results: wiki, note: "Bing empty; using Wikipedia" };
   } catch (e) { errors.push(`wiki: ${e.message}`); }
   return { query, source: "none", results: [], errors };
 }
@@ -202,7 +183,7 @@ async function tool_web_search({ query, max_results = 8 }) {
 // ============================================================================
 // Tool: html_fetch
 // ============================================================================
-async function tool_html_fetch({ url, mode = "text", max_chars = 15000 }) {
+async function tool_html_fetch({ url, mode = "text", max_chars = 12000 }) {
   const r = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -210,19 +191,29 @@ async function tool_html_fetch({ url, mode = "text", max_chars = 15000 }) {
       "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
     },
     redirect: "follow",
+    timeout: 20000,
   });
   const html = await r.text();
   if (mode === "raw") return { url, status: r.status, html: html.slice(0, 200000) };
-  let text = html
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  // Try to extract main content: article, main, or largest body block
+  let mainHtml = html;
+  const article = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  const main = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+  if (article && article[1].length > 500) mainHtml = article[1];
+  else if (main && main[1].length > 500) mainHtml = main[1];
+
+  const text = mainHtml
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(nav|footer|header|aside)[^>]*>[\s\S]*?<\/\1>/gi, "")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/\s+/g, " ").trim();
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+
   return {
     url,
     status: r.status,
@@ -234,7 +225,7 @@ async function tool_html_fetch({ url, mode = "text", max_chars = 15000 }) {
 }
 
 // ============================================================================
-// Tool: js_exec — VM sandbox with proper async support
+// Tool: js_exec — VM sandbox
 // ============================================================================
 async function tool_js_exec({ code, timeout_ms = 5000 }) {
   const logs = [];
@@ -252,35 +243,20 @@ async function tool_js_exec({ code, timeout_ms = 5000 }) {
   };
   const ctx = vm.createContext(sandbox);
   try {
-    const wrapped = `
-      (async () => {
-        ${code}
-      })().then(v => { globalThis.__result = v; globalThis.__done = true; })
-          .catch(e => { globalThis.__error = e && e.stack ? e.stack : String(e); globalThis.__done = true; });
-    `;
-    const script = new vm.Script(wrapped, { timeout: timeout_ms });
-    script.runInContext(ctx, { timeout: timeout_ms });
-    // Wait for async completion
+    const wrapped = `(async()=>{${code}\n})().then(v=>{globalThis.__result=v;globalThis.__done=true}).catch(e=>{globalThis.__error=e&&e.stack?e.stack:String(e);globalThis.__done=true});`;
+    new vm.Script(wrapped, { timeout: timeout_ms }).runInContext(ctx, { timeout: timeout_ms });
     const deadline = Date.now() + Math.min(timeout_ms, 8000);
-    while (!ctx.__done && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 30));
-    }
+    while (!ctx.__done && Date.now() < deadline) await new Promise(r => setTimeout(r, 30));
     if (!ctx.__done) return { ok: false, error: "timeout", logs };
     return {
       ok: !ctx.__error,
-      result: ctx.__result === undefined ? null : safeStringify(ctx.__result),
+      result: ctx.__result === undefined ? null : (typeof ctx.__result === "string" ? ctx.__result : JSON.stringify(ctx.__result, null, 2)),
       logs,
       error: ctx.__error || null,
     };
   } catch (e) {
     return { ok: false, error: String(e.message || e), logs };
   }
-}
-function safeStringify(v) {
-  try {
-    if (typeof v === "string") return v;
-    return JSON.stringify(v, null, 2);
-  } catch { return String(v); }
 }
 
 // ============================================================================
@@ -294,16 +270,16 @@ async function tool_load_skill({ name }) {
 }
 
 // ============================================================================
-// Tool: parallel_think
+// Tool: parallel_think — multi-model consultation
 // ============================================================================
 async function tool_parallel_think({ prompt, models }) {
-  const list = (models && models.length) ? models : ["scira-nemotron-3-super", "gpt-4"];
+  const list = (models && models.length) ? models : ["scira-nemotron-3-super", "gpt-4", "deepseek-r1"];
   const settled = await Promise.allSettled(
     list.map(m =>
       nieChat({
         model: m,
         messages: [
-          { role: "system", content: "Answer concisely and expertly. Focus on insight." },
+          { role: "system", content: "Answer concisely and expertly. Focus on insight, not fluff. 200 words max." },
           { role: "user", content: prompt },
         ],
       })
@@ -314,7 +290,7 @@ async function tool_parallel_think({ prompt, models }) {
     ok: s.status === "fulfilled",
     content: s.status === "fulfilled"
       ? (s.value?.content || s.value?.choices?.[0]?.message?.content || "")
-      : String(s.reason),
+      : String(s.reason).slice(0, 200),
   }));
   return { prompt, answers };
 }
@@ -330,25 +306,30 @@ async function tool_image_generate({ prompt, width = 1024, height = 1024, model 
 }
 
 // ============================================================================
-// Tool: file_upload
+// Tool: file_upload — produces a downloadable artifact
 // ============================================================================
+function guessMime(filename) {
+  const ext = (filename || "").split(".").pop().toLowerCase();
+  return ({
+    html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
+    js: "text/javascript; charset=utf-8", ts: "text/typescript; charset=utf-8",
+    css: "text/css; charset=utf-8", json: "application/json; charset=utf-8",
+    md: "text/markdown; charset=utf-8", txt: "text/plain; charset=utf-8",
+    py: "text/x-python; charset=utf-8", svg: "image/svg+xml",
+    xml: "application/xml", csv: "text/csv; charset=utf-8",
+  })[ext] || "text/plain; charset=utf-8";
+}
+
 async function tool_file_upload({ filename, content, mime }) {
   const id = crypto.randomBytes(8).toString("hex");
-  const guessMime = () => {
-    const ext = (filename || "").split(".").pop().toLowerCase();
-    return ({
-      html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
-      js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8",
-      json: "application/json; charset=utf-8", md: "text/markdown; charset=utf-8",
-      py: "text/x-python; charset=utf-8", txt: "text/plain; charset=utf-8",
-      svg: "image/svg+xml", xml: "application/xml",
-    })[ext] || "text/plain; charset=utf-8";
-  };
-  UPLOADED_FILES.set(id, { name: filename, content, mime: mime || guessMime() });
+  const m = mime || guessMime(filename);
+  UPLOADED_FILES.set(id, { name: filename, content, mime: m });
   return {
     id, filename,
-    mime: mime || guessMime(),
+    mime: m,
     size: Buffer.byteLength(content, "utf8"),
+    lines: (content.match(/\n/g) || []).length + 1,
+    language: (filename || "").split(".").pop() || "text",
     download_url: `/api/files/${id}`,
     preview_url: `/api/files/${id}?inline=1`,
   };
@@ -371,108 +352,144 @@ function expandShortcuts(text) {
 // Tool registry
 // ============================================================================
 const TOOLS = {
-  web_search: { desc: "Bing 経由の Web 検索 (フォールバック: Wikipedia)。トピック調査の第一歩。", params: { query: "string", max_results: "number (default 8)" }, run: tool_web_search },
-  html_fetch: { desc: "任意のURLからHTML→整形テキストを取得（CORS制限なし）。", params: { url: "string", mode: "'text'|'raw'", max_chars: "number" }, run: tool_html_fetch },
-  js_exec: { desc: "サンドボックス内でJavaScriptを実行。async対応、console.logキャプチャ、戻り値返却。", params: { code: "string", timeout_ms: "number" }, run: tool_js_exec },
-  load_skill: { desc: "内蔵スキルを読み込む: UI-SKILL / CODING-SKILL / WEB-RESEARCH-SKILL / PARALLEL-THINK-SKILL / IMAGE-SKILL / GAME-DEV-SKILL", params: { name: "string" }, run: tool_load_skill },
-  parallel_think: { desc: "複数モデルと並列思考して意見集約 (scira-nemotron-3-super, gpt-4, deepseek-r1 等)。", params: { prompt: "string", models: "string[]?" }, run: tool_parallel_think },
-  image_generate: { desc: "Pollinationsで画像URLを生成 (無料・即時)。", params: { prompt: "string", width: "number", height: "number", model: "string?", seed: "number?" }, run: tool_image_generate },
-  file_upload: { desc: "完成コード等をダウンロード可能なファイルとして提供 (HTMLはブラウザで直接開ける)。", params: { filename: "string", content: "string", mime: "string?" }, run: tool_file_upload },
-  shorten_element: { desc: "巨大テキスト/コードを @alias に短縮。以降のプロンプトで参照可能。", params: { name: "string?", content: "string", kind: "'text'|'code'|'json'?" }, run: tool_shorten_element },
+  web_search:      { desc: "Bing RSS 経由の Web 検索。フォールバック: Wikipedia。", run: tool_web_search },
+  html_fetch:      { desc: "URL の本文を取得（CORS 制限なし・article/main 抽出）。", run: tool_html_fetch },
+  js_exec:         { desc: "サンドボックスで JS を実行。async/await 対応、console.log と戻り値を返す。", run: tool_js_exec },
+  load_skill:      { desc: "内蔵スキルを読み込む: UI-SKILL / CODING-SKILL / WEB-RESEARCH-SKILL / PARALLEL-THINK-SKILL / IMAGE-SKILL / GAME-DEV-SKILL", run: tool_load_skill },
+  parallel_think:  { desc: "複数モデル (scira-nemotron-3-super, gpt-4, deepseek-r1 等) と並列思考して意見集約。", run: tool_parallel_think },
+  image_generate:  { desc: "Pollinations で画像 URL を生成。", run: tool_image_generate },
+  file_upload:     { desc: "生成物 (HTML/JS/コード) をダウンロード可能なファイルとして提供。", run: tool_file_upload },
+  shorten_element: { desc: "巨大テキスト/コードを @alias に短縮。以降のプロンプトで参照可能。", run: tool_shorten_element },
 };
 
-function toolsSpec() {
-  return Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.desc, params: t.params }));
-}
-
 // ============================================================================
-// System prompt
+// System prompt — designed to make the agent aggressive and thorough
 // ============================================================================
 function buildSystemPrompt(mainModel) {
-  return `あなたは "Orby" — Genspark 級の超規模コーディング特化型・自律エージェントです。メインモデル: ${mainModel}。
+  return `あなたは "Orby" — Genspark 級の超規模コーディング特化型・自律エージェント。メインモデル: ${mainModel}。
 
-═══════════════════════════════════════════════════════════════════════
-🔧 ツール呼び出し規則（最重要・絶対厳守）
-═══════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════
+🎯 あなたの本質
+════════════════════════════════════════════════════════════════
 
-ツールを使いたい時は、返答の中で必ず次の JSON ブロック形式で呼び出してください:
+あなたは **積極的** かつ **徹底的** です。ユーザーは最高品質の結果を求めており、あなたはそれに応えるまで諦めません。
+
+- **怠けるな**: 情報が浅ければ深掘りする。検索したら興味深いURLは必ず html_fetch する。
+- **並列で考えろ**: 難問なら parallel_think で複数モデルに相談してから答える。
+- **サンドボックスで確かめろ**: コードの動作が不安なら js_exec で試す。
+- **完璧まで再試行**: ツールが失敗したら別の角度から再アプローチ。
+
+════════════════════════════════════════════════════════════════
+🔧 ツール呼び出しプロトコル（絶対厳守）
+════════════════════════════════════════════════════════════════
+
+ツールを使うときは以下の JSON ブロックのみを使用:
 
 \`\`\`tool
-{"tool":"<tool_name>","args":{...}}
+{"tool":"<name>","args":{...}}
 \`\`\`
 
-**極めて重要なルール:**
+**重要なルール**:
 
-1. **知っていることでも、実行可能なタスクなら必ずツールを使え。** 例: 「fibonacci(20)を計算」→ 必ず js_exec を呼ぶ。「最新ニュース」→ 必ず web_search を呼ぶ。「オセロを作って」→ まず load_skill → 次のラウンドで実装コードを生成 → file_upload。
+1. **1ブロック = 1ツール**。同じラウンドで複数ツールを並列実行したい場合は複数ブロックを並べる（推奨）。
+2. **JSON は1行推奨**。改行するときは文字列内は \\n でエスケープ。コメント・末尾カンマ禁止。
+3. **知っていることでも実行可能タスクなら必ずツールで確認/実行せよ**（推測で答えない）。
+4. **ツールブロックだけの応答は「作業継続中」を意味する**。最終回答は次のラウンド以降で。
+5. ツール名: web_search / html_fetch / js_exec / load_skill / parallel_think / image_generate / file_upload / shorten_element
 
-2. **ツール呼び出しブロックだけの返答は「作業中」であり「最終回答」ではない。** ツール結果を受け取ったら、必ず次のラウンドで作業を続行し、ユーザーの要求を完了させよ。
+════════════════════════════════════════════════════════════════
+🚀 自律連鎖パターン（このパターンを積極的に使え）
+════════════════════════════════════════════════════════════════
 
-3. **load_skill を呼んだ後は、そのスキル内容だけで返答を終わらせるな。** スキルは前準備。読み込んだ次のラウンドで実際のタスク（コード生成など）を実行せよ。
+【パターンA: 深掘り Web リサーチ】
+ラウンド1: web_search でトピック検索
+  ↓ 結果を見て、興味深い/権威ある URL を 1-3 個ピック
+ラウンド2: **同時に** html_fetch × 複数（並列ブロック）で本文を取得
+  ↓ 各ページの本文を統合
+ラウンド3: ソースを引用しつつ日本語で回答
 
-4. **web_search が空配列 [] を返した / エラーの場合は、別のクエリで再試行するか、Wikipedia等別ソースで代替検索せよ。** 「検索できませんでした」と諦めるのは禁止。
+【パターンB: 並列思考 → 実装】
+ラウンド1: parallel_think でアーキテクチャ選定を複数モデルに相談
+  ↓ 各モデルの意見を統合
+ラウンド2: (必要に応じ) load_skill で該当スキル読み込み
+ラウンド3: file_upload で完成コードをアップロード
+ラウンド4: 日本語で完成報告 + リンク提示
 
-5. ツール名は次のいずれかのみ: web_search, html_fetch, js_exec, load_skill, parallel_think, image_generate, file_upload, shorten_element
+【パターンC: コード生成タスク】
+ラウンド1: load_skill("CODING-SKILL") or "GAME-DEV-SKILL" or "UI-SKILL"
+ラウンド2: file_upload で完成物をアップロード（コード全体を content に埋め込む）
+ラウンド3: 日本語で機能説明 + [filename](/api/files/xxx) リンク
 
-6. \`\`\`tool\`\`\` ブロック内は**1行の有効なJSON**にせよ（改行、コメント、末尾カンマ禁止）。文字列内の改行は \\n でエスケープ。
+════════════════════════════════════════════════════════════════
+📋 具体例
+════════════════════════════════════════════════════════════════
 
-═══════════════════════════════════════════════════════════════════════
-🛠 利用可能ツール仕様
-═══════════════════════════════════════════════════════════════════════
-
-${toolsSpec().map(t => `## ${t.name}\n${t.description}\nargs: ${JSON.stringify(t.params)}`).join("\n\n")}
-
-═══════════════════════════════════════════════════════════════════════
-💡 呼び出し実例
-═══════════════════════════════════════════════════════════════════════
-
-例1: 「fibonacci(20)を計算して」
+**例1**: 「今週のAIニュースを調べて」
+ラウンド1:
 \`\`\`tool
-{"tool":"js_exec","args":{"code":"function fib(n){let a=0,b=1;for(let i=0;i<n;i++)[a,b]=[b,a+b];return a} return fib(20);"}}
+{"tool":"web_search","args":{"query":"AI news 2026 July","max_results":5}}
 \`\`\`
 
-例2: 「AI最新ニュース調べて」
+ラウンド2 (検索結果を見て興味深い URL を並列取得):
 \`\`\`tool
-{"tool":"web_search","args":{"query":"AI news 2026","max_results":5}}
+{"tool":"html_fetch","args":{"url":"https://techcrunch.com/..."}}
+\`\`\`
+\`\`\`tool
+{"tool":"html_fetch","args":{"url":"https://arstechnica.com/..."}}
 \`\`\`
 
-例3: 「index.html単体でAIオセロを作って」
-ラウンド1 (スキルを読み込む):
+ラウンド3: 各ソースを統合して日本語で要約 + URL 引用
+
+**例2**: 「Rust vs Go どちらが速い？」
+ラウンド1:
+\`\`\`tool
+{"tool":"parallel_think","args":{"prompt":"Rust と Go の速度比較。ベンチマーク傾向、ユースケース別優劣、メモリモデルの違い","models":["scira-nemotron-3-super","gpt-4","deepseek-r1"]}}
+\`\`\`
+
+ラウンド2: 3モデルの意見を統合した日本語回答
+
+**例3**: 「index.html でAIオセロ作って」
+ラウンド1:
 \`\`\`tool
 {"tool":"load_skill","args":{"name":"GAME-DEV-SKILL"}}
 \`\`\`
-ラウンド2 (スキルを踏まえてコードを実際に生成し file_upload する。スキルのテキストをユーザーに見せてはいけない):
+
+ラウンド2:
 \`\`\`tool
-{"tool":"file_upload","args":{"filename":"othello.html","content":"<!DOCTYPE html>...（ミニマックスAI搭載の完成HTMLコード全文）..."}}
+{"tool":"file_upload","args":{"filename":"othello.html","content":"<!DOCTYPE html>...（完全なHTML/CSS/JS、ミニマックスAI搭載）..."}}
 \`\`\`
-ラウンド3 (最終回答):
-「オセロを作りました。[othello.html](/api/files/xxx) からダウンロードできます。ミニマックスAIを実装し...」
 
-**重要**: load_skill を呼んだ後のターンでは、スキルのテキストをそのままユーザーへの回答にしてはいけません。必ず実際のタスク（コード生成など）を実行してください。
+ラウンド3: 「オセロを作りました。[othello.html](/api/files/xxx) からダウンロードして開いてください。α-β 枝刈り付きミニマックス AI 搭載で、Easy/Normal/Hard 選択可能です。」
 
-例4: 「コードだけ短いなら直接フェンスでもOK」— 30行未満の小さなコードなら file_upload を使わずに直接 \`\`\`html フェンスで回答しても良い。100行超と見込まれるなら必ず file_upload。
+════════════════════════════════════════════════════════════════
+⚡ 積極性ルール（重要）
+════════════════════════════════════════════════════════════════
 
-═══════════════════════════════════════════════════════════════════════
-🔁 再思考ポリシー
-═══════════════════════════════════════════════════════════════════════
+- 「調べて」「知りたい」→ 必ず web_search、興味深い結果は必ず html_fetch まで連鎖
+- 「比較」「選定」「アーキテクチャ」「意見」→ 必ず parallel_think
+- 「作って」「実装して」「書いて」→ 必ず load_skill → file_upload
+- 「計算して」「実行して」「確かめて」→ 必ず js_exec
+- 「画像」「絵」「イラスト」→ 必ず image_generate
 
-- ツール結果に情報不足/エラー/品質不足があれば追加ツール呼び出しで補え。最大10ラウンド。
-- web_search でURL発見 → 続けて html_fetch でそのURLの本文取得。
-- 大規模コード生成前は load_skill("CODING-SKILL") か "GAME-DEV-SKILL"。
-- 難問なら parallel_think で複数モデル相談。
-- **重要**: 「タスクが未完了なのに tool ブロックだけの返答」は避けよ。タスク完了までツール呼び出しを継続せよ。
+**絶対禁止**:
+- 検索スニペットだけで満足して html_fetch を怠ること
+- 難問を単一モデルの独断で答えること（parallel_think を使え）
+- ツール結果をユーザーへの返答に生JSONで貼り付けること（file_upload や自然な要約を使え）
+- load_skill の内容をユーザーに見せること（内部ガイド、隠せ）
 
-═══════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════
 ✨ 最終回答スタイル
-═══════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════
 
-- ツール使用が全て終わったら、\`\`\`tool\`\`\` ブロックを含まない最終回答を日本語で出せ。それが完了合図。
-- コードは \`\`\`言語 フェンスで囲め。50行超なら file_upload を使いダウンロードリンクを提示せよ。
-- ダウンロードリンクは \`[filename](/api/files/xxx)\` 形式で明示。
-- 前置き不要。実質から入れ。ミニマルで洗練された文体。`;
+- ツール使用が全て終わったら \`\`\`tool\`\`\` ブロックを含まない最終回答を日本語で出す。それが完了合図。
+- 前置き不要、実質から入る。ミニマルで洗練された文体。
+- ダウンロードリンクは [filename](/api/files/xxx) 形式で明示。
+- Web リサーチの結論は必ずソース URL を引用。
+- コードは file_upload を使い、チャット内には短い抜粋のみ表示。`;
 }
 
 // ============================================================================
-// SSE helpers
+// SSE
 // ============================================================================
 function sseSend(res, event, data) {
   try {
@@ -481,7 +498,6 @@ function sseSend(res, event, data) {
   } catch (_) {}
 }
 
-// Robust tool-call parser (handles stray whitespace, code fences, single-line JSON)
 function parseToolCalls(text) {
   const calls = [];
   const re = /```tool\s*\n?([\s\S]*?)\n?```/g;
@@ -489,7 +505,6 @@ function parseToolCalls(text) {
   while ((m = re.exec(text))) {
     const raw = m[1].trim();
     if (!raw) continue;
-    // Try direct JSON parse; if fails, try to extract first {...}
     let parsed = null;
     try { parsed = JSON.parse(raw); }
     catch {
@@ -508,10 +523,10 @@ function stripToolBlocks(text) {
 }
 
 // ============================================================================
-// /api/agent — Autonomous ReAct loop with SSE
+// Agent endpoint
 // ============================================================================
 app.post("/api/agent", async (req, res) => {
-  const { messages = [], model = "felo-chat", max_rounds = 10 } = req.body || {};
+  const { messages = [], model = "scira-default", max_rounds = 10 } = req.body || {};
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -519,9 +534,6 @@ app.post("/api/agent", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders && res.flushHeaders();
 
-  // Note: we intentionally don't listen to req.close because Express sometimes
-  // fires it spuriously mid-SSE-stream (esp. after res.flushHeaders + first write).
-  // Instead we detect real closure via res.writableEnded / res.destroyed inside the loop.
   const isClosed = () => res.writableEnded || res.destroyed;
 
   const sysText = buildSystemPrompt(model);
@@ -532,25 +544,21 @@ app.post("/api/agent", async (req, res) => {
     content: typeof m.content === "string" ? expandShortcuts(m.content) : m.content,
   }));
 
-  // Inject system rules into first user message (for models like felo-chat that ignore system role)
+  // Inject system rules also into first user message (models like felo-chat ignore system role)
   if (userMsgs.length > 0 && userMsgs[0].role === "user") {
     const originalFirst = userMsgs[0].content;
     userMsgs[0] = {
       role: "user",
       content:
-`[システム指示 — この節はシステムからの指示です]
-
+`[システム指示]
 ${sysText}
+[/システム指示]
 
-[システム指示終わり]
-
-─── 以下が実際のユーザーメッセージ ───
-
+─── ユーザーメッセージ ───
 ${originalFirst}
+─── ここまで ───
 
-─── メッセージ終わり ───
-
-[Orbyとして応答してください。タスクにツール実行が必要なら \`\`\`tool\\n{...}\\n\`\`\` ブロックで呼び出してください。ツールはサーバー側で実行され結果が渡されます。「ツールを持っていない」とは絶対に言わないでください。タスク完了までツール呼び出しを繰り返してください。]`
+[Orby として応答してください。タスクにツール実行が必要なら必ず \`\`\`tool\`\`\` ブロックで呼び出してください。「ツールを持っていない」とは絶対に言わないでください。積極的に自律連鎖してください。]`
     };
   }
 
@@ -564,65 +572,76 @@ ${originalFirst}
 
       let assistantText = "";
       sseSend(res, "assistant_start", { round });
-      let streamErr = null;
+
+      // Try streaming first. If it stops mid-tool-block (common with scira anti-tool hints),
+      // detect the incomplete state and retry with non-stream.
+      let streamedText = "";
       try {
-        assistantText = await nieChatStream(
+        streamedText = await nieChatStream(
           { model, messages: convo, temperature: 0.6 },
-          (delta) => sseSend(res, "assistant_delta", { text: delta })
+          (delta) => { sseSend(res, "assistant_delta", { text: delta }); }
         );
-      } catch (e) {
-        streamErr = e;
-      }
-      // If stream produced no content, try non-stream fallback
-      if (!assistantText || !assistantText.trim()) {
-        try {
-          const j = await nieChat({ model, messages: convo, temperature: 0.6 });
-          assistantText = j.content || j.choices?.[0]?.message?.content || "";
-          if (assistantText) sseSend(res, "assistant_delta", { text: assistantText });
-        } catch (e2) {
-          const errMsg = `round ${round} model failed: ${streamErr?.message || ""} / fallback: ${e2.message}`;
-          console.error(errMsg);
-          sseSend(res, "error", { message: errMsg });
-          // Try again with a different model as last resort
+      } catch (_) {}
+
+      // Detect problems:
+      //  1. Empty response
+      //  2. Truncated inside an unclosed ```tool block
+      //  3. Contains ```tool block but uses INVALID tool names (like scira's built-in "skill", "deep-research")
+      const knownToolNames = new Set(Object.keys(TOOLS));
+      const toolNameMatches = [...streamedText.matchAll(/```tool\s*\n?\s*\{\s*"tool"\s*:\s*"([^"]+)"/g)].map(m => m[1]);
+      const hasInvalidToolName = toolNameMatches.length > 0 && toolNameMatches.every(n => !knownToolNames.has(n));
+      const looksTruncated =
+        !streamedText ||
+        !streamedText.trim() ||
+        (streamedText.match(/```tool/g) || []).length > (streamedText.match(/```tool[\s\S]*?```/g) || []).length ||
+        streamedText.trim().endsWith('{"tool":"skill') ||
+        hasInvalidToolName;
+
+      if (looksTruncated) {
+        // scira-default often emits its INTERNAL tool names (skill/deep-research/extreme-search).
+        // Escalate to a model that follows our custom protocol (felo-chat works best).
+        const escalationChain = hasInvalidToolName
+          ? ["felo-chat", "gpt-4o", "scira-nemotron-3-super"]
+          : [model, "felo-chat", "scira-nemotron-3-super"];
+
+        let replaced = false;
+        for (const alt of escalationChain) {
           try {
-            const j = await nieChat({ model: "scira-default", messages: convo, temperature: 0.4 });
-            assistantText = j.content || j.choices?.[0]?.message?.content || "";
-            if (assistantText) sseSend(res, "assistant_delta", { text: assistantText });
-          } catch (e3) {
-            sseSend(res, "error", { message: `all models failed: ${e3.message}` });
-            break;
-          }
+            const j = await nieChat({ model: alt, messages: convo, temperature: 0.6 });
+            const full = j.content || j.choices?.[0]?.message?.content || "";
+            if (full && full.trim()) {
+              // Check the replacement also isn't garbage
+              const altNames = [...full.matchAll(/```tool\s*\n?\s*\{\s*"tool"\s*:\s*"([^"]+)"/g)].map(m => m[1]);
+              const altInvalid = altNames.length > 0 && altNames.every(n => !knownToolNames.has(n));
+              if (altInvalid) continue;
+              // Replace the garbage stream visually
+              sseSend(res, "assistant_reset", {});
+              sseSend(res, "assistant_delta", { text: full });
+              assistantText = full;
+              replaced = true;
+              break;
+            }
+          } catch (_) {}
         }
+        if (!replaced) assistantText = streamedText;
+      } else {
+        assistantText = streamedText;
       }
+
       sseSend(res, "assistant_end", { round });
 
       const calls = parseToolCalls(assistantText);
+      convo.push({ role: "assistant", content: assistantText || " " });
 
-      // If model returned empty text after tool round, try again with a stronger model
-      if (!assistantText || !assistantText.trim()) {
-        console.warn(`round ${round}: empty response, escalating to scira-default`);
-        try {
-          const j = await nieChat({ model: "scira-default", messages: convo, temperature: 0.5 });
-          assistantText = j.content || j.choices?.[0]?.message?.content || "";
-          if (assistantText) sseSend(res, "assistant_delta", { text: assistantText });
-        } catch (e) {
-          console.error("escalation failed:", e.message);
-        }
-      }
-      const finalCalls = parseToolCalls(assistantText);
-      convo.push({ role: "assistant", content: assistantText });
-
-      if (finalCalls.length === 0) {
-        // True final answer
+      if (calls.length === 0) {
         sseSend(res, "final", { text: stripToolBlocks(assistantText) });
         finalEmitted = true;
         break;
       }
 
-      // Execute tools in parallel
-      sseSend(res, "tools_start", { count: finalCalls.length });
+      sseSend(res, "tools_start", { count: calls.length });
 
-      const results = await Promise.all(finalCalls.map(async (c) => {
+      const results = await Promise.all(calls.map(async (c) => {
         const t0 = Date.now();
         const callId = crypto.randomBytes(4).toString("hex");
         sseSend(res, "tool_call", { id: callId, tool: c.tool, args: c.args });
@@ -639,54 +658,61 @@ ${originalFirst}
         }
       }));
 
-      // Truncate large tool results going back into context (avoid blowing token limit)
+      // Truncate for context
       const feedback = results.map(r => {
         let resStr;
         try { resStr = JSON.stringify(r.result, null, 2); }
         catch { resStr = String(r.result); }
-        if (resStr.length > 8000) resStr = resStr.slice(0, 8000) + "\n... (truncated for context)";
-        return "```tool_result\n" + JSON.stringify({ tool: r.tool, args: r.args }, null, 2) + "\nresult:\n" + resStr + "\n```";
+        if (resStr.length > 6000) resStr = resStr.slice(0, 6000) + "\n... (truncated)";
+        return "```tool_result\ntool: " + r.tool + "\nargs: " + JSON.stringify(r.args) + "\nresult:\n" + resStr + "\n```";
       }).join("\n\n");
 
-      // Determine what the agent MUST do next based on which tools were just used
-      const usedTools = new Set(results.map(r => r.tool));
-      const hasLoadSkill = usedTools.has("load_skill");
-      const hasWebSearch = usedTools.has("web_search");
-      const hasHtmlFetch = usedTools.has("html_fetch");
-      const hasFileUpload = usedTools.has("file_upload");
+      // Autonomous next-step nudge
+      const used = new Set(results.map(r => r.tool));
+      const hasLoadSkill  = used.has("load_skill");
+      const hasWebSearch  = used.has("web_search");
+      const hasHtmlFetch  = used.has("html_fetch");
+      const hasFileUpload = used.has("file_upload");
 
-      let nextInstruction = "";
-      if (hasLoadSkill && !hasFileUpload) {
-        nextInstruction =
-`
+      let nudge = "";
+      if (hasWebSearch && !hasHtmlFetch) {
+        const searchResult = results.find(r => r.tool === "web_search")?.result;
+        const urls = (searchResult?.results || []).slice(0, 3).map(r => r.url);
+        nudge = `
 
-[重要] load_skill は内部ガイドです。ユーザーへの回答ではありません。
-スキルの内容を読んだ上で、今すぐユーザーの元リクエスト (例: 「オセロを作って」) を実行してください。
-実際のコード生成をこのターンで行い、完成したコードを file_upload ツールでアップロードしてください。
-日本語の短い説明は file_upload のあとで。スキル内容をそのままユーザーに見せないでください。`;
-      } else if (hasWebSearch && !hasHtmlFetch) {
-        nextInstruction =
-`
+[自律連鎖] 検索結果を受け取りました。ユーザーの質問に**深く**答えるため、次のラウンドで**必ず**上位1-3件のURLを html_fetch で並列取得してください。同じラウンドで複数の \`\`\`tool\`\`\` ブロックを並べれば並列実行されます。
 
-[ヒント] 検索結果を取得しました。もしユーザーの質問に回答するには詳細が必要なら、
-上位 1-2 件の URL を html_fetch で取得して本文を読んでから回答してください。
-検索スニペットだけで十分なら、そのまま日本語で要約して最終回答を出してください。`;
+推奨URL候補:
+${urls.map((u, i) => `${i+1}. ${u}`).join("\n")}
+
+例:
+\`\`\`tool
+{"tool":"html_fetch","args":{"url":"${urls[0] || "..."}"}}
+\`\`\`
+\`\`\`tool
+{"tool":"html_fetch","args":{"url":"${urls[1] || "..."}"}}
+\`\`\`
+
+もし検索スニペットで既に十分な情報があると判断できるなら html_fetch をスキップして最終回答を出しても構いませんが、**基本は本文取得まで連鎖してください**。`;
+      } else if (hasLoadSkill && !hasFileUpload) {
+        nudge = `
+
+[重要] load_skill は内部ガイドです。ユーザーへの応答に露出させないでください。
+このラウンドでは、スキルを踏まえて実際のタスク(コード生成など)を実行し、完成物を file_upload でアップロードしてください。`;
       } else {
-        nextInstruction =
-`
+        nudge = `
 
-[次のアクション] ツール結果を見てタスクが完了したか判断してください:
-- まだ完了していない → 次のツールを呼び出して作業を継続
-- 完了した → \`\`\`tool\`\`\` ブロックなしで日本語の最終回答を出してください。`;
+[次のアクション] ツール結果を見てタスクが完了したか判断:
+- 未完了 → 次のツールを呼び出して継続
+- 完了 → \`\`\`tool\`\`\` ブロックなしで日本語の最終回答（ソースURLを引用しつつ）を出してください。`;
       }
 
-      convo.push({ role: "user", content: feedback + nextInstruction });
+      convo.push({ role: "user", content: feedback + nudge });
 
       if (round === max_rounds && !finalEmitted) {
-        // Force a final summarization turn
         sseSend(res, "round", { round: round + 1, forced: true });
         try {
-          convo.push({ role: "user", content: "[最大ラウンドに到達しました。これ以上ツール呼び出しはせず、これまでの結果からユーザーへの最終回答を日本語で出してください。]" });
+          convo.push({ role: "user", content: "[最大ラウンド到達。これ以上ツール呼び出しはせず、これまでの結果からユーザーへの最終回答を日本語で出してください。]" });
           const j = await nieChat({ model, messages: convo, temperature: 0.4 });
           const finalText = stripToolBlocks(j.content || j.choices?.[0]?.message?.content || "");
           sseSend(res, "assistant_start", { round: round + 1 });
@@ -694,7 +720,7 @@ ${originalFirst}
           sseSend(res, "assistant_end", { round: round + 1 });
           sseSend(res, "final", { text: finalText });
           finalEmitted = true;
-        } catch (e) {
+        } catch (_) {
           sseSend(res, "final", { text: "（最大ラウンド到達）" });
         }
       }
@@ -709,46 +735,36 @@ ${originalFirst}
 });
 
 // ============================================================================
-// Helper endpoints
+// File / model / health
 // ============================================================================
 app.get("/api/models", async (_req, res) => {
   try {
     const r = await fetch(`${NIE_BASE}/models`);
-    const j = await r.json();
-    res.json(j);
-  } catch (e) {
-    res.status(502).json({ error: String(e.message || e) });
-  }
+    res.json(await r.json());
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
 app.get("/api/files/:id", (req, res) => {
   const f = UPLOADED_FILES.get(req.params.id);
   if (!f) return res.status(404).send("not found");
   res.setHeader("Content-Type", f.mime);
-  if (req.query.inline) {
-    res.setHeader("Content-Disposition", `inline; filename="${f.name}"`);
-  } else {
-    res.setHeader("Content-Disposition", `attachment; filename="${f.name}"`);
-  }
+  res.setHeader("Content-Disposition", `${req.query.inline ? "inline" : "attachment"}; filename="${f.name}"`);
   res.send(f.content);
 });
 
-app.get("/api/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "orby",
-    version: "2.0.0",
-    tools: Object.keys(TOOLS),
-    skills: Object.keys(SKILLS),
-  });
+app.get("/api/files/:id/raw", (req, res) => {
+  const f = UPLOADED_FILES.get(req.params.id);
+  if (!f) return res.status(404).json({ error: "not found" });
+  res.json({ id: req.params.id, filename: f.name, content: f.content, mime: f.mime });
 });
 
-// ============================================================================
-// Boot
-// ============================================================================
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, service: "orby", version: "3.0.0", tools: Object.keys(TOOLS), skills: Object.keys(SKILLS) });
+});
+
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Orby v2 running on http://localhost:${PORT}`));
+  app.listen(PORT, () => console.log(`Orby v3 running on http://localhost:${PORT}`));
 }
 
 module.exports = app;
